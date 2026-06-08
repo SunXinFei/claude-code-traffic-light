@@ -1,21 +1,11 @@
-new_env
 .claude
 
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-venv/
-env/
-*.egg-info/
-dist/
-build/
+# Dependencies
+node_modules/
 
-# PyInstaller
-*.spec
-*.app
+# Build output
+dist/
+release/
 
 # IDE
 .vscode/
@@ -24,3 +14,8 @@ build/
 # OS
 .DS_Store
 *.dmg
+
+# Old Python artifacts
+__pycache__/
+*.py[cod]
+venv/
