@@ -1,8 +1,9 @@
-const { app, BrowserWindow, ipcMain, Menu, Tray, nativeImage, screen } = require('electron')
+const { app, BrowserWindow, ipcMain, Menu, Tray, nativeImage, screen, clipboard } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const os = require('os')
 const child_process = require('child_process')
+const https = require('https')
 
 const TMP          = process.platform === 'win32' ? path.join(os.homedir(), '.claude') : '/tmp'
 const STATE_DIR    = path.join(os.homedir(), '.claude', 'traffic_light')
@@ -13,6 +14,7 @@ const MUTE_FILE    = path.join(TMP, 'cc_traffic_light_mute')
 const STYLE_FILE   = path.join(TMP, 'cc_traffic_light_style')
 const POS_FILE     = path.join(os.tmpdir(), 'cc_traffic_light_pos')
 const CONFIG_PATH  = path.join(os.homedir(), '.claude', 'settings.json')
+const API_KEYS_FILE = path.join(STATE_DIR, 'api_keys.json')
 const distPath     = path.join(__dirname, '../dist/index.html')
 const isDev        = !fs.existsSync(distPath)
 
@@ -62,6 +64,106 @@ function cleanProjectFiles(projectName) {
   for (const ext of ['.state', '.dir', '.app']) {
     try { fs.unlinkSync(path.join(STATE_DIR, `${projectName}${ext}`)) } catch {}
   }
+}
+
+// ---------- API Key helpers ----------
+
+function readApiKeys() {
+  try {
+    if (fs.existsSync(API_KEYS_FILE)) {
+      return JSON.parse(fs.readFileSync(API_KEYS_FILE, 'utf-8'))
+    }
+  } catch {}
+  return {}
+}
+
+function writeApiKeys(keys) {
+  try {
+    fs.mkdirSync(STATE_DIR, { recursive: true })
+    fs.writeFileSync(API_KEYS_FILE, JSON.stringify(keys, null, 2), 'utf-8')
+    console.log('[balance] wrote api_keys.json:', JSON.stringify(keys))
+  } catch (e) {
+    console.error('[balance] write api_keys.json failed:', e)
+  }
+}
+
+function getApiKey(provider) {
+  // Priority: env var > config file
+  const envMap = { deepseek: 'DEEPSEEK_API_KEY' }
+  const envKey = process.env[envMap[provider] || `${provider.toUpperCase()}_API_KEY`]
+  if (envKey) return envKey
+  const keys = readApiKeys()
+  return keys[provider] || ''
+}
+
+// ---------- DeepSeek Balance ----------
+
+let lastBalance = null  // { balance_infos: [...], ... }
+
+function transmitBalance() {
+  const data = lastBalance ? { ...lastBalance } : lastBalance
+  if (data && typeof data === 'object') {
+    const keys = readApiKeys()
+    if (keys._budgets?.deepseek) data._budget = keys._budgets.deepseek
+  }
+  if (mainWin) mainWin.webContents.send('balance-update', data)
+  if (settingsWin) settingsWin.webContents.send('balance-update', data)
+}
+
+function fetchDeepSeekBalance() {
+  const apiKey = getApiKey('deepseek')
+  if (!apiKey) {
+    lastBalance = { error: '未配置 API Key' }
+    if (mainWin) mainWin.webContents.send('balance-update', lastBalance)
+    if (settingsWin) settingsWin.webContents.send('balance-update', lastBalance)
+    return
+  }
+
+  const options = {
+    hostname: 'api.deepseek.com',
+    path: '/user/balance',
+    method: 'GET',
+    headers: {
+      'Accept': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+    },
+    timeout: 10000,
+  }
+
+  const req = https.request(options, (res) => {
+    let data = ''
+    res.on('data', (chunk) => { data += chunk })
+    res.on('end', () => {
+      try {
+        const json = JSON.parse(data)
+        if (json.balance_infos) {
+          lastBalance = json
+        } else if (json.error) {
+          lastBalance = { error: json.error.message || json.error }
+        } else {
+          lastBalance = { error: '未知响应格式' }
+        }
+      } catch {
+        lastBalance = { error: '解析响应失败' }
+      }
+      transmitBalance()
+    })
+  })
+
+  req.on('error', (e) => {
+    lastBalance = { error: e.message }
+    if (mainWin) mainWin.webContents.send('balance-update', lastBalance)
+    if (settingsWin) settingsWin.webContents.send('balance-update', lastBalance)
+  })
+
+  req.on('timeout', () => {
+    req.destroy()
+    lastBalance = { error: '请求超时' }
+    if (mainWin) mainWin.webContents.send('balance-update', lastBalance)
+    if (settingsWin) settingsWin.webContents.send('balance-update', lastBalance)
+  })
+
+  req.end()
 }
 
 // ---------- Activate host app ----------
@@ -252,6 +354,7 @@ function setupClaudeHooks() {
 
 let mainWin = null
 let tray = null
+let settingsWin = null
 
 function buildAppMenu(currentTheme) {
   return Menu.buildFromTemplate([
@@ -273,6 +376,18 @@ function buildAppMenu(currentTheme) {
         { type: 'separator' },
         { label: '隐藏', role: 'hide' },
         { label: '退出', accelerator: 'Cmd+Q', click: () => app.quit() }
+      ]
+    },
+    {
+      label: '编辑',
+      submenu: [
+        { label: '撤销', role: 'undo' },
+        { label: '重做', role: 'redo' },
+        { type: 'separator' },
+        { label: '剪切', role: 'cut' },
+        { label: '复制', role: 'copy' },
+        { label: '粘贴', role: 'paste' },
+        { label: '全选', role: 'selectAll' },
       ]
     },
     {
@@ -345,6 +460,40 @@ function buildTrayMenu(currentTheme, currentStyle, selectedProject) {
   )
 
   return Menu.buildFromTemplate(items)
+}
+
+// ---------- Settings window ----------
+
+function openSettingsWindow() {
+  if (settingsWin) {
+    settingsWin.focus()
+    return
+  }
+
+  const { width: sw, height: sh } = screen.getPrimaryDisplay().workAreaSize
+  const w = 340, h = 460
+
+  settingsWin = new BrowserWindow({
+    width: w,
+    height: h,
+    x: Math.round((sw - w) / 2),
+    y: Math.round((sh - h) / 2),
+    title: 'AI 模型设置',
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    backgroundColor: '#1c1c1e',
+    titleBarStyle: 'hiddenInset',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.cjs'),
+      contextIsolation: true,
+      sandbox: false,
+    },
+  })
+
+  settingsWin.loadFile(path.join(__dirname, 'settings.html'))
+  settingsWin.on('closed', () => { settingsWin = null })
 }
 
 // ---------- Window creation ----------
@@ -439,7 +588,7 @@ function createWindow() {
     } catch {}
   }, 2000)
 
-  mainWin.on('closed', () => { clearInterval(poll); clearInterval(projectPoll); mainWin = null })
+  mainWin.on('closed', () => { clearInterval(poll); clearInterval(projectPoll); clearInterval(balancePoll); mainWin = null; if (!settingsWin) app.quit() })
   mainWin.on('moved', () => {
     try {
       const [x, y] = mainWin.getPosition()
@@ -498,6 +647,64 @@ function createWindow() {
 
   ipcMain.on('select-project', (_, name) => {
     setSelectedProject(name)
+  })
+
+  // Balance IPC
+  ipcMain.handle('get-balance', () => lastBalance)
+
+  ipcMain.on('refresh-balance', () => {
+    fetchDeepSeekBalance()
+  })
+
+  ipcMain.on('set-api-key', (_, provider, key) => {
+    const keys = readApiKeys()
+    if (key) {
+      keys[provider] = key
+    } else {
+      delete keys[provider]
+    }
+    writeApiKeys(keys)
+    fetchDeepSeekBalance()
+  })
+
+  ipcMain.handle('get-api-key', (_, provider) => getApiKey(provider))
+
+  ipcMain.handle('get-budget', (_, provider) => {
+    const keys = readApiKeys()
+    const budgets = keys._budgets || {}
+    return budgets[provider] || null
+  })
+
+  ipcMain.on('set-budget', (_, provider, amount) => {
+    try {
+      const keys = readApiKeys()
+      if (!keys._budgets) keys._budgets = {}
+      if (amount > 0) {
+        keys._budgets[provider] = amount
+      } else {
+        delete keys._budgets[provider]
+      }
+      writeApiKeys(keys)
+      console.log('[balance] budget saved:', provider, amount, '->', API_KEYS_FILE)
+      // Re-fetch to update the main window ring
+      transmitBalance()
+      return true
+    } catch (e) {
+      console.error('[balance] budget save failed:', e)
+      return false
+    }
+  })
+
+  // Fetch balance on startup and every hour
+  fetchDeepSeekBalance()
+  const balancePoll = setInterval(fetchDeepSeekBalance, 3600 * 1000)
+
+  ipcMain.handle('read-clipboard', () => {
+    try { return clipboard.readText() } catch { return '' }
+  })
+
+  ipcMain.on('open-settings', () => {
+    openSettingsWindow()
   })
 }
 

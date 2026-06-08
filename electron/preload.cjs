@@ -35,4 +35,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('project-change', handler)
     return () => ipcRenderer.removeListener('project-change', handler)
   },
+  getBalance: () => ipcRenderer.invoke('get-balance'),
+  refreshBalance: () => ipcRenderer.send('refresh-balance'),
+  setApiKey: (provider, key) => ipcRenderer.send('set-api-key', provider, key),
+  getApiKey: (provider) => ipcRenderer.invoke('get-api-key', provider),
+  onBalanceUpdate: (callback) => {
+    const handler = (_, balance) => callback(balance)
+    ipcRenderer.on('balance-update', handler)
+    return () => ipcRenderer.removeListener('balance-update', handler)
+  },
+  readClipboard: () => ipcRenderer.invoke('read-clipboard'),
+  openSettings: () => ipcRenderer.send('open-settings'),
+  getBudget: (provider) => ipcRenderer.invoke('get-budget', provider),
+  setBudget: (provider, amount) => ipcRenderer.send('set-budget', provider, amount),
 })

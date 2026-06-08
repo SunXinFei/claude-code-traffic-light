@@ -6,7 +6,7 @@ macOS 浮动红绿灯，一眼看懂 Claude Code 在干嘛。[English](README_EN
 ![Electron](https://img.shields.io/badge/Electron-31-blue)
 ![License](https://img.shields.io/license/MIT-yellow)
 
-![Screenshot](example.png)
+![Screenshot](image.png)
 
 ## 灯的含义
 
@@ -20,6 +20,7 @@ macOS 浮动红绿灯，一眼看懂 Claude Code 在干嘛。[English](README_EN
 
 - **真正置顶** — Electron 窗口置顶，全屏/多桌面都能看到
 - **精美 UI** — CSS 交通灯，呼吸/脉冲/环形动画，深色/浅色主题
+- **AI 余额光环** — Apple Watch 风格渐变色环（红→橙→黄→绿），直观显示 DeepSeek API 余额比例
 - **声音提示** — Web Audio 合成提示音，可静音
 - **多项目** — 同时跑多个 Claude Code 会话，自动切换，托盘菜单也可手动选择
 - **点击跳转** — 点击灯泡，自动跳转到对应项目所在的 IDE 窗口（支持 VSCode/Cursor/Windsurf 等）
@@ -58,6 +59,15 @@ npm run dist:win
 - **绿灯**：`Stop` / `StopFailure`（Claude 完成，包括中途退出）时触发
 - **跳转**：利用 hook 环境变量识别宿主应用，通过 IDE CLI 精确定位项目窗口
 - **清理**：`SessionEnd` hook 在对话关闭时自动删除项目文件
+
+## AI 余额光环
+
+灯光外圈有一道 Apple Watch 运动环风格的渐变色环，显示 DeepSeek API 余额比例。
+
+- **渐变色**：红 → 橙 → 黄 → 绿，余额越低越偏红
+- **比例计算**：`当前余额 / 手动预算`，未设预算时自动用充值额度
+- **API Key**：优先读环境变量 `DEEPSEEK_API_KEY`，也可在设置弹窗中配置
+- **设置弹窗**：点击灯光下方的余额文案或设置面板中的"AI 设置"按钮打开
 
 ## 要求
 

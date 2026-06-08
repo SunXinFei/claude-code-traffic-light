@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>AI 设置</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Inter', sans-serif;
+      background: #1c1c1e;
+      color: #e5e5e7;
+      padding: 20px;
+      -webkit-user-select: none;
+    }
+    h1 {
+      font-size: 16px;
+      font-weight: 600;
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .section {
+      background: #2c2c2e;
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 12px;
+    }
+    .section-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 12px;
+    }
+    .section-title {
+      font-size: 14px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .badge {
+      font-size: 10px;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-weight: 500;
+    }
+    .badge-on { background: #30D15820; color: #30D158; }
+    .badge-off { background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.4); }
+    .toggle {
+      width: 40px; height: 22px; border-radius: 11px;
+      background: rgba(255,255,255,0.15);
+      position: relative; cursor: pointer; transition: background 0.2s;
+    }
+    .toggle.on { background: #30D158; }
+    .toggle-knob {
+      position: absolute; top: 2px; left: 2px;
+      width: 18px; height: 18px; border-radius: 50%;
+      background: white; transition: left 0.2s;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+    }
+    .toggle.on .toggle-knob { left: 20px; }
+    .field { margin-bottom: 10px; }
+    .field-label {
+      font-size: 11px;
+      color: rgba(255,255,255,0.5);
+      margin-bottom: 4px;
+    }
+    .field-row {
+      display: flex; gap: 8px; align-items: center;
+    }
+    input[type="text"], input[type="password"] {
+      flex: 1; padding: 8px 10px; border-radius: 8px;
+      border: 1px solid rgba(255,255,255,0.1);
+      background: rgba(255,255,255,0.06);
+      color: #e5e5e7; font-size: 13px;
+      outline: none; -webkit-user-select: text;
+    }
+    input:focus { border-color: #30D158; }
+    .btn {
+      padding: 8px 14px; border-radius: 8px; border: none;
+      font-size: 12px; cursor: pointer; transition: all 0.15s;
+      font-weight: 500;
+    }
+    .btn-primary { background: #30D158; color: white; }
+    .btn-primary:hover { background: #28b84c; }
+    .btn-secondary {
+      background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.7);
+    }
+    .btn-secondary:hover { background: rgba(255,255,255,0.12); }
+    .btn-sm { padding: 6px 10px; font-size: 11px; }
+    .balance-grid {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
+    }
+    .balance-card {
+      background: rgba(255,255,255,0.04);
+      border-radius: 8px; padding: 10px;
+    }
+    .balance-card .label {
+      font-size: 10px; color: rgba(255,255,255,0.4);
+      margin-bottom: 2px;
+    }
+    .balance-card .value {
+      font-size: 16px; font-weight: 600;
+    }
+    .balance-card .value.green { color: #30D158; }
+    .balance-card .value.orange { color: #FF9F0A; }
+    .error-msg {
+      font-size: 12px; color: #FF3B30;
+      padding: 8px; background: #FF3B3010;
+      border-radius: 8px;
+    }
+    .actions {
+      display: flex; gap: 8px; margin-top: 8px;
+    }
+    .hint {
+      font-size: 10px; color: rgba(255,255,255,0.3);
+      margin-top: 4px; line-height: 1.4;
+    }
+    .eye-btn {
+      background: none; border: none; color: rgba(255,255,255,0.4);
+      cursor: pointer; font-size: 16px; padding: 4px 6px;
+    }
+    .eye-btn:hover { color: rgba(255,255,255,0.7); }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <h1>AI 模型设置</h1>
+
+  <div class="section" id="ds-section">
+    <div class="section-header">
+      <div class="section-title">
+        DeepSeek
+        <span class="badge badge-off" id="ds-badge">未启用</span>
+      </div>
+      <div class="toggle" id="ds-toggle" onclick="toggleDeepSeek()">
+        <div class="toggle-knob"></div>
+      </div>
+    </div>
+
+    <div id="ds-config" class="hidden">
+      <div class="field">
+        <div class="field-label">API Key</div>
+        <div class="field-row">
+          <input type="password" id="ds-key" placeholder="sk-...">
+          <button class="eye-btn" onclick="toggleEye('ds-key', this)" title="显示/隐藏">&#128065;</button>
+        </div>
+        <div class="hint">支持环境变量 DEEPSEEK_API_KEY，优先级高于此处配置</div>
+      </div>
+
+      <div class="field">
+        <div class="field-label">总金额（手动设定，用于光环比例计算）</div>
+        <div class="field-row">
+          <input type="text" id="ds-budget" placeholder="例如 20.00" oninput="updateBudgetStatus()">
+        </div>
+        <div class="hint">光环进度 = 当前余额 / 此处设定的总金额</div>
+      </div>
+
+      <div id="ds-budget-status" style="font-size:11px;color:rgba(255,255,255,0.5);margin-bottom:4px;"></div>
+
+      <div class="actions">
+        <button class="btn btn-primary btn-sm" onclick="saveAll()">保存</button>
+        <button class="btn btn-secondary btn-sm" onclick="refreshBalance()">刷新余额</button>
+      </div>
+
+      <div id="ds-balance" style="margin-top: 12px;"></div>
+    </div>
+  </div>
+
+  <script>
+    let dsEnabled = false
+    let balance = null
+
+    async function init() {
+      const key = await window.electronAPI.getApiKey('deepseek')
+      dsEnabled = !!key
+      if (key) {
+        document.getElementById('ds-key').value = key
+      }
+      const budget = await window.electronAPI.getBudget('deepseek')
+      if (budget) {
+        document.getElementById('ds-budget').value = budget
+      }
+      updateToggleUI()
+      loadBalance()
+    }
+
+    function saveAll() {
+      // Save API Key
+      const key = document.getElementById('ds-key').value.trim()
+      window.electronAPI.setApiKey('deepseek', key)
+      // Save Budget
+      const amount = parseFloat(document.getElementById('ds-budget').value)
+      if (!isNaN(amount) && amount > 0) {
+        window.electronAPI.setBudget('deepseek', amount)
+      }
+      // Feedback
+      const btn = document.querySelector('button[onclick="saveAll()"]')
+      if (btn) {
+        const orig = btn.textContent
+        btn.textContent = '已保存'
+        btn.style.background = '#30D158'
+        setTimeout(() => { btn.textContent = orig; btn.style.background = '' }, 1500)
+      }
+      dsEnabled = !!key
+      updateToggleUI()
+      refreshBalance()
+    }
+
+    function toggleDeepSeek() {
+      dsEnabled = !dsEnabled
+      updateToggleUI()
+    }
+
+    function updateToggleUI() {
+      const toggle = document.getElementById('ds-toggle')
+      const badge = document.getElementById('ds-badge')
+      const config = document.getElementById('ds-config')
+      if (dsEnabled) {
+        toggle.classList.add('on')
+        badge.className = 'badge badge-on'
+        badge.textContent = '已启用'
+        config.classList.remove('hidden')
+      } else {
+        toggle.classList.remove('on')
+        badge.className = 'badge badge-off'
+        badge.textContent = '未启用'
+        config.classList.add('hidden')
+      }
+    }
+
+    function toggleEye(inputId, btn) {
+      const input = document.getElementById(inputId)
+      if (input.type === 'password') {
+        input.type = 'text'
+        btn.innerHTML = '&#128064;'
+      } else {
+        input.type = 'password'
+        btn.innerHTML = '&#128065;'
+      }
+    }
+
+    async function saveKey(provider) {
+      const key = document.getElementById('ds-key').value.trim()
+      await window.electronAPI.setApiKey(provider, key)
+      dsEnabled = !!key
+      updateToggleUI()
+      refreshBalance()
+    }
+
+    async function refreshBalance() {
+      const el = document.getElementById('ds-balance')
+      el.innerHTML = '<div style="font-size:11px;color:rgba(255,255,255,0.4)">查询中...</div>'
+      window.electronAPI.refreshBalance()
+    }
+
+    async function loadBalance() {
+      balance = await window.electronAPI.getBalance()
+      renderBalance()
+      updateBudgetStatus()
+    }
+
+    function updateBudgetStatus() {
+      const el = document.getElementById('ds-budget-status')
+      if (!el) return
+      const inputVal = parseFloat(document.getElementById('ds-budget').value)
+      const budgetAmt = isNaN(inputVal) ? 0 : inputVal
+      if (!budgetAmt || !balance || balance.error || !balance.balance_infos) {
+        el.innerHTML = ''
+        return
+      }
+      const total = balance.balance_infos.reduce((s, i) => s + (parseFloat(i.total_balance) || 0), 0)
+      const pct = Math.round(Math.min(1, total / budgetAmt) * 100)
+      el.innerHTML = `余额 ${total.toFixed(2)} / 预算 ${budgetAmt.toFixed(2)} = <b>${pct}%</b>`
+    }
+
+    function renderBalance() {
+      const el = document.getElementById('ds-balance')
+      if (!balance) {
+        el.innerHTML = '<div style="font-size:11px;color:rgba(255,255,255,0.3)">暂无余额数据</div>'
+        return
+      }
+      if (balance.error) {
+        el.innerHTML = `<div class="error-msg">${balance.error}</div>`
+        return
+      }
+      if (!balance.balance_infos || !balance.balance_infos.length) {
+        el.innerHTML = '<div style="font-size:11px;color:rgba(255,255,255,0.3)">暂无余额数据</div>'
+        return
+      }
+
+      let html = '<div class="balance-grid">'
+      for (const info of balance.balance_infos) {
+        const total = parseFloat(info.total_balance) || 0
+        const granted = parseFloat(info.granted_balance) || 0
+        const toppedUp = parseFloat(info.topped_up_balance) || 0
+        const sym = info.currency === 'USD' ? '$' : '¥'
+
+        html += `
+          <div class="balance-card">
+            <div class="label">总余额</div>
+            <div class="value green">${sym}${total.toFixed(2)}</div>
+          </div>
+          <div class="balance-card">
+            <div class="label">充值额度</div>
+            <div class="value">${sym}${toppedUp.toFixed(2)}</div>
+          </div>
+          <div class="balance-card">
+            <div class="label">赠送额度</div>
+            <div class="value orange">${sym}${granted.toFixed(2)}</div>
+          </div>
+          <div class="balance-card">
+            <div class="label">币种</div>
+            <div class="value" style="font-size:13px">${info.currency || 'CNY'}</div>
+          </div>
+        `
+      }
+      html += '</div>'
+      el.innerHTML = html
+    }
+
+    // Listen for balance updates from main process
+    window.electronAPI.onBalanceUpdate((b) => {
+      balance = b
+      renderBalance()
+      updateBudgetStatus()
+    })
+
+    init()
+  </script>
+</body>
+</html>

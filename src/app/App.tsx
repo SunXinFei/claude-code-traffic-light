@@ -25,6 +25,12 @@ declare global {
       getProjects: () => Promise<string[]>;
       getSelectedProject: () => Promise<string>;
       selectProject: (name: string) => void;
+      getBalance: () => Promise<any>;
+      refreshBalance: () => void;
+      onBalanceUpdate: (cb: (balance: any) => void) => () => void;
+      openSettings: () => void;
+      getBudget: (provider: string) => Promise<number | null>;
+      setBudget: (provider: string, amount: number) => void;
     };
   }
 }
@@ -45,6 +51,7 @@ export default function App() {
   const [muted, setMuted]             = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [currentProject, setCurrentProject] = useState("");
+  const [balance, setBalance] = useState<any>(null);
   const greenTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const audioCtxRef   = useRef<AudioContext | null>(null);
 
@@ -57,6 +64,7 @@ export default function App() {
       if (s === "single" || s === "triple") setStyleState(s as Style);
     });
     window.electronAPI.getSelectedProject().then((p) => setCurrentProject(p));
+    window.electronAPI.getBalance().then((b) => { if (b) setBalance(b); });
   }, []);
 
   useEffect(() => {
@@ -74,6 +82,13 @@ export default function App() {
   useEffect(() => {
     return window.electronAPI.onProjectChange((p) => {
       setCurrentProject(p);
+    });
+  }, []);
+
+  useEffect(() => {
+    return window.electronAPI.onBalanceUpdate((b) => {
+      setBalance(b);
+      if (b && b._budget) setBudgetState(b._budget);
     });
   }, []);
 
@@ -148,18 +163,43 @@ export default function App() {
     };
   }, [applyState]);
 
-  const handleManualSelect = (light: Light) => {
-    applyState(light);
-    window.electronAPI.setState(light);
-  };
-
   const dark = theme === "dark";
 
+  const formatBalanceShort = () => {
+    if (!balance) return null;
+    if (balance.error) return null;
+    if (!balance.balance_infos?.length) return null;
+    const total = balance.balance_infos.reduce((sum: number, info: any) => {
+      return sum + (parseFloat(info.total_balance) || 0);
+    }, 0);
+    const currency = balance.balance_infos[0]?.currency || 'CNY';
+    const symbol = currency === 'USD' ? '$' : '¥';
+    return `${symbol}${total.toFixed(2)}`;
+  };
+
+  const [budget, setBudgetState] = useState<number | null>(null);
   useEffect(() => {
-    const base = style === "single" ? 110 : 220;
+    window.electronAPI.getBudget('deepseek').then((b: number | null) => setBudgetState(b));
+  }, []);
+
+  const ringPercent = (() => {
+    if (!balance || balance.error || !balance.balance_infos?.length) return 0;
+    const total = balance.balance_infos.reduce((s: number, i: any) => s + (parseFloat(i.total_balance) || 0), 0);
+    const fallback = balance.balance_infos.reduce((s: number, i: any) => s + (parseFloat(i.topped_up_balance) || 0), 0);
+    const denom = budget || fallback;
+    if (!denom) return 0;
+    return Math.min(1, total / denom);
+  })();
+  const ringDeg = ringPercent * 360;
+  const ringColor = ringPercent > 0.5 ? '#30D158' : ringPercent > 0.2 ? '#FF9F0A' : '#FF453A';
+
+  useEffect(() => {
+    const hasBalance = formatBalanceShort() !== null;
+    const balanceH = hasBalance ? 20 : 0;
+    const base = (style === "single" ? 110 : 220) + balanceH;
     const withSettings = style === "single" ? 200 : 310;
     window.electronAPI.setWindowHeight(showSettings ? withSettings : base);
-  }, [showSettings, style]);
+  }, [showSettings, style, balance]);
 
   const toggleMute = () => {
     const next = !muted;
@@ -208,10 +248,36 @@ export default function App() {
         .no-drag { -webkit-app-region: no-drag; }
       `}</style>
 
-      <div
-        className="relative flex flex-col items-center"
-        style={{ ...housing, borderRadius: 24, width: 80, padding: style === "single" ? "16px 0 16px" : "16px 0 20px", WebkitAppRegion: "drag" } as React.CSSProperties}
-      >
+      <div className="relative inline-flex">
+        {/* Ring background track — dark version of gradient */}
+        <div style={{
+          position: "absolute", inset: -4, borderRadius: 28,
+          background: dark
+            ? "conic-gradient(from 0deg, rgba(255,59,48,0.25), rgba(255,149,0,0.25), rgba(255,204,0,0.25), rgba(52,199,89,0.25), rgba(48,209,88,0.25))"
+            : "conic-gradient(from 0deg, rgba(255,59,48,0.18), rgba(255,149,0,0.18), rgba(255,204,0,0.18), rgba(52,199,89,0.18), rgba(48,209,88,0.18))",
+          pointerEvents: "none",
+        }} />
+        {/* Ring progress — full gradient, masked to percentage */}
+        {ringPercent > 0 && (
+          <div style={{
+            position: "absolute", inset: -4, borderRadius: 28,
+            background: "conic-gradient(from 0deg, rgba(255,59,48,0.8), rgba(255,149,0,0.8), rgba(255,204,0,0.8), rgba(52,199,89,0.8), rgba(48,209,88,0.8))",
+            WebkitMaskImage: `conic-gradient(from 0deg, black 0deg, black ${ringDeg}deg, transparent ${ringDeg}deg, transparent 360deg)`,
+            maskImage: `conic-gradient(from 0deg, black 0deg, black ${ringDeg}deg, transparent ${ringDeg}deg, transparent 360deg)`,
+            pointerEvents: "none",
+          }} />
+        )}
+        {/* Donut hole cover — matches housing bg to create ring effect */}
+        <div style={{
+          position: "absolute", inset: -1, borderRadius: 26,
+          background: dark ? "#2c2c2e" : "#f5f5f7",
+          pointerEvents: "none",
+        }} />
+
+        <div
+          className="relative flex flex-col items-center"
+          style={{ ...housing, borderRadius: 24, width: 80, padding: style === "single" ? "16px 0 16px" : "16px 0 20px", WebkitAppRegion: "drag" } as React.CSSProperties}
+        >
         {style === "single" ? (
           <div className="flex flex-col items-center">
             {(() => {
@@ -320,6 +386,23 @@ export default function App() {
         </div>
         )}
 
+        {balance && (
+          <button
+            className="no-drag"
+            onClick={() => window.electronAPI.refreshBalance()}
+            style={{
+              position: "absolute", bottom: 6, left: 6,
+              width: 20, height: 20, borderRadius: "50%", border: "none",
+              background: dark ? "rgba(255,255,255,0.1)" : "rgba(0,0,0,0.08)",
+              color: dark ? "rgba(255,255,255,0.5)" : "rgba(0,0,0,0.35)",
+              fontSize: 10, cursor: "pointer", display: "flex",
+              alignItems: "center", justifyContent: "center",
+              WebkitAppRegion: "no-drag",
+            } as React.CSSProperties}
+            title="刷新余额"
+          >↻</button>
+        )}
+
         <button
           className="no-drag"
           onClick={() => setShowSettings(next => !next)}
@@ -334,7 +417,29 @@ export default function App() {
           } as React.CSSProperties}
           title="设置"
         >⚙</button>
+        </div>
       </div>
+
+      {formatBalanceShort() !== null && !showSettings && (
+        <div
+          className="no-drag"
+          style={{
+            marginTop: 4,
+            fontSize: 9,
+            color: dark ? "rgba(255,255,255,0.5)" : "rgba(0,0,0,0.4)",
+            textAlign: "center",
+            WebkitAppRegion: "no-drag",
+            cursor: "pointer",
+          }}
+          onClick={() => window.electronAPI.openSettings()}
+          title={`余额 ${formatBalanceShort()} / 预算 ¥${budget || '—'} | ${Math.round(ringPercent * 100)}%`}
+        >
+          <div>DS {formatBalanceShort()}{budget ? ` / ¥${budget}` : ''}</div>
+          <div style={{ fontSize: 7, color: `${ringColor}cc`, marginTop: 1 }}>
+            {Math.round(ringPercent * 100)}%
+          </div>
+        </div>
+      )}
 
       {showSettings && (
         <div
@@ -400,6 +505,17 @@ export default function App() {
               }} />
             </div>
           </label>
+
+          <button
+            onClick={() => window.electronAPI.openSettings()}
+            style={{
+              fontSize: 9, border: "none", borderRadius: 6,
+              padding: "4px 0", cursor: "pointer",
+              background: dark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.06)",
+              color: dark ? "rgba(255,255,255,0.6)" : "rgba(0,0,0,0.5)",
+              display: "flex", alignItems: "center", justifyContent: "center", gap: 3,
+            }}
+          >AI 设置</button>
 
           {currentProject && (
             <div style={{
