@@ -10,13 +10,13 @@ A macOS floating traffic light that shows what Claude Code is doing at a glance.
 
 ## Demos
 
-### Traffic light state switching (1)
+### Triple-light mode (yellow · waiting for user confirmation)
 
-![Traffic light demo 1](demo1.gif)
+![Triple-light mode](demo1.gif)
 
-### Traffic light state switching (2)
+### Single-light mode (yellow · waiting for user confirmation)
 
-![Traffic light demo 2](demo2.gif)
+![Single-light mode](demo2.gif)
 
 ## Light Meanings
 
