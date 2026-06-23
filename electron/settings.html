@@ -168,8 +168,47 @@
     </div>
   </div>
 
+  <div class="section" id="volc-section">
+    <div class="section-header">
+      <div class="section-title">
+        火山 Ark · Claude Code Coding Plan
+        <span class="badge badge-off" id="volc-badge">未启用</span>
+      </div>
+      <div class="toggle" id="volc-toggle" onclick="toggleVolc()">
+        <div class="toggle-knob"></div>
+      </div>
+    </div>
+
+    <div id="volc-config" class="hidden">
+      <div class="field">
+        <div class="field-label">Access Key ID</div>
+        <div class="field-row">
+          <input type="text" id="volc-ak" placeholder="AKLT...">
+          <button class="eye-btn" onclick="toggleEye('volc-ak', this)" title="显示/隐藏">&#128065;</button>
+        </div>
+      </div>
+
+      <div class="field">
+        <div class="field-label">Secret Access Key</div>
+        <div class="field-row">
+          <input type="password" id="volc-sk" placeholder="Base64 编码的 SK">
+          <button class="eye-btn" onclick="toggleEye('volc-sk', this)" title="显示/隐藏">&#128065;</button>
+        </div>
+        <div class="hint">支持环境变量 VOLC_AK / VOLC_SK，优先级高于此处配置</div>
+      </div>
+
+      <div class="actions">
+        <button class="btn btn-primary btn-sm" onclick="saveVolc()">保存</button>
+        <button class="btn btn-secondary btn-sm" onclick="refreshBalance()">刷新用量</button>
+      </div>
+
+      <div id="volc-balance" style="margin-top: 12px;"></div>
+    </div>
+  </div>
+
   <script>
     let dsEnabled = false
+    let volcEnabled = false
     let balance = null
 
     async function init() {
@@ -182,7 +221,18 @@
       if (budget) {
         document.getElementById('ds-budget').value = budget
       }
+
+      const cred = await window.electronAPI.getVolcCredentials()
+      volcEnabled = !!(cred && cred.accessKeyId && cred.secretAccessKey)
+      if (cred && cred.accessKeyId) {
+        document.getElementById('volc-ak').value = cred.accessKeyId
+      }
+      if (cred && cred.secretAccessKey) {
+        document.getElementById('volc-sk').value = cred.secretAccessKey
+      }
+
       updateToggleUI()
+      updateVolcToggleUI()
       loadBalance()
     }
 
@@ -211,6 +261,106 @@
     function toggleDeepSeek() {
       dsEnabled = !dsEnabled
       updateToggleUI()
+      if (dsEnabled) {
+        window.electronAPI.selectProvider('deepseek')
+      }
+    }
+
+    function toggleVolc() {
+      volcEnabled = !volcEnabled
+      updateVolcToggleUI()
+      if (volcEnabled) {
+        window.electronAPI.selectProvider('volcengine')
+      }
+    }
+
+    function updateVolcToggleUI() {
+      const toggle = document.getElementById('volc-toggle')
+      const badge = document.getElementById('volc-badge')
+      const config = document.getElementById('volc-config')
+      if (volcEnabled) {
+        toggle.classList.add('on')
+        badge.className = 'badge badge-on'
+        badge.textContent = '已启用'
+        config.classList.remove('hidden')
+      } else {
+        toggle.classList.remove('on')
+        badge.className = 'badge badge-off'
+        badge.textContent = '未启用'
+        config.classList.add('hidden')
+      }
+    }
+
+    async function saveVolc() {
+      const ak = document.getElementById('volc-ak').value.trim()
+      const sk = document.getElementById('volc-sk').value.trim()
+      await window.electronAPI.setVolcCredentials(ak, sk)
+      volcEnabled = !!(ak && sk)
+      updateVolcToggleUI()
+      refreshBalance()
+      const btn = document.querySelector('button[onclick="saveVolc()"]')
+      if (btn) {
+        const orig = btn.textContent
+        btn.textContent = '已保存'
+        btn.style.background = '#30D158'
+        setTimeout(() => { btn.textContent = orig; btn.style.background = '' }, 1500)
+      }
+    }
+
+    function formatRelativeReset(resetTs) {
+      if (!resetTs) return ''
+      const diff = resetTs - Math.floor(Date.now() / 1000)
+      if (diff <= 0) return '已可刷新'
+      const days = Math.floor(diff / 86400)
+      const hours = Math.floor((diff % 86400) / 3600)
+      const mins = Math.floor((diff % 3600) / 60)
+      if (days > 0) return `${days}天${String(hours).padStart(2, '0')}时${String(mins).padStart(2, '0')}分后刷新`
+      if (hours > 0) return `${String(hours).padStart(2, '0')}时${String(mins).padStart(2, '0')}分后刷新`
+      return `${mins}分后刷新`
+    }
+
+    function formatUpdateTs(ts) {
+      if (!ts) return ''
+      const d = new Date(ts * 1000)
+      const pad = (n) => String(n).padStart(2, '0')
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+    }
+
+    const VOLC_LEVEL_LABEL = { session: 'Session', weekly: 'Weekly', monthly: 'Monthly' }
+
+    function renderVolcBalance(b) {
+      const el = document.getElementById('volc-balance')
+      if (!el) return
+      if (!b) {
+        el.innerHTML = '<div style="font-size:11px;color:rgba(255,255,255,0.3)">暂无用量数据</div>'
+        return
+      }
+      if (b.error) {
+        el.innerHTML = `<div class="error-msg">${b.error}</div>`
+        return
+      }
+      if (!b.quotas || !b.quotas.length) {
+        el.innerHTML = '<div style="font-size:11px;color:rgba(255,255,255,0.3)">暂无用量数据</div>'
+        return
+      }
+      const updateStr = formatUpdateTs(b.updateTimestamp)
+      let html = `<div style="font-size:10px;color:rgba(255,255,255,0.4);margin-bottom:8px;">数据截止 ${updateStr} · 状态 ${b.status || '—'}</div>`
+      html += '<div class="balance-grid">'
+      for (const q of b.quotas) {
+        const pct = (q.percent || 0).toFixed(2)
+        const remain = Math.max(0, 100 - (q.percent || 0)).toFixed(1)
+        const colorCls = q.percent > 90 ? 'orange' : 'green'
+        const label = VOLC_LEVEL_LABEL[q.level] || q.level
+        html += `
+          <div class="balance-card">
+            <div class="label">${label} 已用</div>
+            <div class="value ${colorCls}">${pct}%</div>
+            <div class="hint" style="margin-top:4px;">剩余 ${remain}% · ${formatRelativeReset(q.resetTimestamp)}</div>
+          </div>
+        `
+      }
+      html += '</div>'
+      el.innerHTML = html
     }
 
     function updateToggleUI() {
@@ -276,7 +426,14 @@
     }
 
     function renderBalance() {
+      const provider = balance?._provider || balance?.provider
+      if (provider === 'volcengine') {
+        renderVolcBalance(balance)
+        document.getElementById('ds-balance').innerHTML = ''
+        return
+      }
       const el = document.getElementById('ds-balance')
+      document.getElementById('volc-balance').innerHTML = ''
       if (!balance) {
         el.innerHTML = '<div style="font-size:11px;color:rgba(255,255,255,0.3)">暂无余额数据</div>'
         return

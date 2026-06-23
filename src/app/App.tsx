@@ -31,6 +31,8 @@ declare global {
       openSettings: () => void;
       getBudget: (provider: string) => Promise<number | null>;
       setBudget: (provider: string, amount: number) => void;
+      getSelectedProvider: () => Promise<string | null>;
+      selectProvider: (p: string) => void;
     };
   }
 }
@@ -168,6 +170,12 @@ export default function App() {
   const formatBalanceShort = () => {
     if (!balance) return null;
     if (balance.error) return null;
+    const provider = balance._provider || balance.provider;
+    if (provider === 'volcengine') {
+      const sess = balance.quotas?.find((q: any) => q.level === 'session');
+      if (!sess) return null;
+      return `${Math.round(sess.percent)}%`;
+    }
     if (!balance.balance_infos?.length) return null;
     const total = balance.balance_infos.reduce((sum: number, info: any) => {
       return sum + (parseFloat(info.total_balance) || 0);
@@ -177,13 +185,32 @@ export default function App() {
     return `${symbol}${total.toFixed(2)}`;
   };
 
+  const volcQuotaStr = () => {
+    if (!balance || balance.error) return null;
+    const provider = balance._provider || balance.provider;
+    if (provider !== 'volcengine') return null;
+    const q = balance.quotas || [];
+    const get = (lvl: string) => {
+      const it = q.find((x: any) => x.level === lvl);
+      return it ? `${Math.round(it.percent)}%` : '—';
+    };
+    return `${get('session')} / ${get('weekly')} / ${get('monthly')}`;
+  };
+
   const [budget, setBudgetState] = useState<number | null>(null);
   useEffect(() => {
     window.electronAPI.getBudget('deepseek').then((b: number | null) => setBudgetState(b));
   }, []);
 
   const ringPercent = (() => {
-    if (!balance || balance.error || !balance.balance_infos?.length) return 0;
+    if (!balance || balance.error) return 0;
+    const provider = balance._provider || balance.provider;
+    if (provider === 'volcengine') {
+      const mo = balance.quotas?.find((q: any) => q.level === 'monthly');
+      if (!mo) return 0;
+      return Math.max(0, Math.min(1, 1 - (mo.percent || 0) / 100));
+    }
+    if (!balance.balance_infos?.length) return 0;
     const total = balance.balance_infos.reduce((s: number, i: any) => s + (parseFloat(i.total_balance) || 0), 0);
     const fallback = balance.balance_infos.reduce((s: number, i: any) => s + (parseFloat(i.topped_up_balance) || 0), 0);
     const denom = budget || fallback;
@@ -432,9 +459,19 @@ export default function App() {
             cursor: "pointer",
           }}
           onClick={() => window.electronAPI.openSettings()}
-          title={`余额 ${formatBalanceShort()} / 预算 ¥${budget || '—'} | ${Math.round(ringPercent * 100)}%`}
+          title={(() => {
+            const provider = balance?._provider || balance?.provider;
+            if (provider === 'volcengine') {
+              return `Ark 用量 ${volcQuotaStr()} (sess/wk/mo) | 剩余 ${Math.round(ringPercent * 100)}%`;
+            }
+            return `余额 ${formatBalanceShort()} / 预算 ¥${budget || '—'} | ${Math.round(ringPercent * 100)}%`;
+          })()}
         >
-          <div>DS {formatBalanceShort()}{budget ? ` / ¥${budget}` : ''}</div>
+          <div>{(() => {
+            const provider = balance?._provider || balance?.provider;
+            if (provider === 'volcengine') return `Ark ${volcQuotaStr()}`;
+            return `DS ${formatBalanceShort()}${budget ? ` / ¥${budget}` : ''}`;
+          })()}</div>
           <div style={{ fontSize: 7, color: `${ringColor}cc`, marginTop: 1 }}>
             {Math.round(ringPercent * 100)}%
           </div>

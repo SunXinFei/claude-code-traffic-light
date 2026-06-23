@@ -48,4 +48,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openSettings: () => ipcRenderer.send('open-settings'),
   getBudget: (provider) => ipcRenderer.invoke('get-budget', provider),
   setBudget: (provider, amount) => ipcRenderer.send('set-budget', provider, amount),
+  getVolcCredentials: () => ipcRenderer.invoke('get-volc-credentials'),
+  setVolcCredentials: (ak, sk) => ipcRenderer.send('set-volc-credentials', ak, sk),
+  getSelectedProvider: () => ipcRenderer.invoke('get-selected-provider'),
+  selectProvider: (p) => ipcRenderer.send('select-provider', p),
 })

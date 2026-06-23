@@ -4,6 +4,8 @@ const fs = require('fs')
 const os = require('os')
 const child_process = require('child_process')
 const https = require('https')
+const { URL } = require('url')
+const { buildArkPresignUrl } = require('./volcSign.cjs')
 
 const TMP          = process.platform === 'win32' ? path.join(os.homedir(), '.claude') : '/tmp'
 const STATE_DIR    = path.join(os.homedir(), '.claude', 'traffic_light')
@@ -96,6 +98,45 @@ function getApiKey(provider) {
   return keys[provider] || ''
 }
 
+function getVolcCredentials() {
+  const keys = readApiKeys()
+  const v = keys.volcengine || {}
+  const ak = process.env.VOLC_AK || v.accessKeyId || ''
+  const sk = process.env.VOLC_SK || v.secretAccessKey || ''
+  return { accessKeyId: ak, secretAccessKey: sk }
+}
+
+function setVolcCredentials(ak, sk) {
+  const keys = readApiKeys()
+  if (ak && sk) {
+    keys.volcengine = { accessKeyId: ak, secretAccessKey: sk }
+  } else {
+    delete keys.volcengine
+  }
+  // 切换到 volcengine (互斥: 启用 volcengine 时停用 deepseek)
+  if (ak && sk) keys.selected_provider = 'volcengine'
+  else if (keys.selected_provider === 'volcengine') {
+    keys.selected_provider = keys.deepseek ? 'deepseek' : null
+  }
+  writeApiKeys(keys)
+}
+
+function getSelectedProvider() {
+  const keys = readApiKeys()
+  if (keys.selected_provider) return keys.selected_provider
+  if (keys.volcengine?.accessKeyId && keys.volcengine?.secretAccessKey) return 'volcengine'
+  if (keys.deepseek || getApiKey('deepseek')) return 'deepseek'
+  return null
+}
+
+function setSelectedProvider(p) {
+  const keys = readApiKeys()
+  if (p === 'deepseek' || p === 'volcengine' || p === null) {
+    keys.selected_provider = p
+    writeApiKeys(keys)
+  }
+}
+
 // ---------- DeepSeek Balance ----------
 
 let lastBalance = null  // { balance_infos: [...], ... }
@@ -105,6 +146,7 @@ function transmitBalance() {
   if (data && typeof data === 'object') {
     const keys = readApiKeys()
     if (keys._budgets?.deepseek) data._budget = keys._budgets.deepseek
+    data._provider = keys.selected_provider || (keys.volcengine?.accessKeyId ? 'volcengine' : 'deepseek')
   }
   if (mainWin) mainWin.webContents.send('balance-update', data)
   if (settingsWin) settingsWin.webContents.send('balance-update', data)
@@ -164,6 +206,110 @@ function fetchDeepSeekBalance() {
   })
 
   req.end()
+}
+
+// ---------- Volcengine Ark Coding Plan Usage ----------
+
+const VOLC_ERROR_MAP = {
+  SignatureDoesNotMatch: '签名失败，检查 Secret Access Key',
+  InvalidAccessKeyId: 'Access Key ID 无效',
+  RequestExpired: '请求过期（本机时钟漂移）',
+  InvalidActionOrVersion: 'Action 或 Version 不支持',
+  MissingSecurityToken: '缺少 Security Token（需 STS 临时凭证）',
+  UnauthorizedOperation: 'AK 无权访问 Ark Coding Plan',
+}
+
+function fetchVolcArkUsage() {
+  const { accessKeyId, secretAccessKey } = getVolcCredentials()
+  if (!accessKeyId || !secretAccessKey) {
+    lastBalance = { provider: 'volcengine', error: '未配置 AK/SK' }
+    transmitBalance()
+    return
+  }
+
+  let presign
+  try {
+    presign = buildArkPresignUrl({
+      accessKeyId,
+      secretAccessKey,
+      action: 'GetCodingPlanUsage',
+    })
+  } catch (e) {
+    lastBalance = { provider: 'volcengine', error: '签名构造失败: ' + e.message }
+    transmitBalance()
+    return
+  }
+
+  const u = new URL(presign.url)
+  const body = '{}'
+  const options = {
+    hostname: u.hostname,
+    path: u.pathname + u.search,
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Content-Length': Buffer.byteLength(body),
+    },
+    timeout: 10000,
+  }
+
+  const req = https.request(options, (res) => {
+    let data = ''
+    res.on('data', (chunk) => { data += chunk })
+    res.on('end', () => {
+      try {
+        const json = JSON.parse(data)
+        const meta = json.ResponseMetadata || {}
+        if (meta.Error) {
+          const code = meta.Error.Code || ''
+          lastBalance = {
+            provider: 'volcengine',
+            error: VOLC_ERROR_MAP[code] || `${code}: ${meta.Error.Message || ''}`,
+          }
+        } else if (json.Result?.QuotaUsage) {
+          lastBalance = {
+            provider: 'volcengine',
+            status: json.Result.Status || '',
+            updateTimestamp: json.Result.UpdateTimestamp || 0,
+            quotas: json.Result.QuotaUsage.map((q) => ({
+              level: q.Level,
+              percent: q.Percent,
+              resetTimestamp: q.ResetTimestamp,
+            })),
+          }
+        } else {
+          lastBalance = { provider: 'volcengine', error: '未知响应格式' }
+        }
+      } catch {
+        lastBalance = { provider: 'volcengine', error: '解析响应失败' }
+      }
+      transmitBalance()
+    })
+  })
+
+  req.on('error', (e) => {
+    lastBalance = { provider: 'volcengine', error: e.message }
+    transmitBalance()
+  })
+
+  req.on('timeout', () => {
+    req.destroy()
+    lastBalance = { provider: 'volcengine', error: '请求超时' }
+    transmitBalance()
+  })
+
+  req.write(body)
+  req.end()
+}
+
+function refreshSelectedBalance() {
+  const p = getSelectedProvider()
+  if (p === 'volcengine') fetchVolcArkUsage()
+  else if (p === 'deepseek') fetchDeepSeekBalance()
+  else {
+    lastBalance = { error: '未配置任何 provider' }
+    transmitBalance()
+  }
 }
 
 // ---------- Activate host app ----------
@@ -653,21 +799,40 @@ function createWindow() {
   ipcMain.handle('get-balance', () => lastBalance)
 
   ipcMain.on('refresh-balance', () => {
-    fetchDeepSeekBalance()
+    refreshSelectedBalance()
   })
 
   ipcMain.on('set-api-key', (_, provider, key) => {
     const keys = readApiKeys()
     if (key) {
       keys[provider] = key
+      // 互斥: 启用 deepseek 切换到 deepseek
+      if (provider === 'deepseek') keys.selected_provider = 'deepseek'
     } else {
       delete keys[provider]
+      if (keys.selected_provider === provider) {
+        keys.selected_provider = keys.volcengine?.accessKeyId ? 'volcengine' : null
+      }
     }
     writeApiKeys(keys)
-    fetchDeepSeekBalance()
+    refreshSelectedBalance()
   })
 
   ipcMain.handle('get-api-key', (_, provider) => getApiKey(provider))
+
+  ipcMain.handle('get-volc-credentials', () => getVolcCredentials())
+
+  ipcMain.on('set-volc-credentials', (_, ak, sk) => {
+    setVolcCredentials(ak, sk)
+    refreshSelectedBalance()
+  })
+
+  ipcMain.handle('get-selected-provider', () => getSelectedProvider())
+
+  ipcMain.on('select-provider', (_, p) => {
+    setSelectedProvider(p)
+    refreshSelectedBalance()
+  })
 
   ipcMain.handle('get-budget', (_, provider) => {
     const keys = readApiKeys()
@@ -696,8 +861,8 @@ function createWindow() {
   })
 
   // Fetch balance on startup and every hour
-  fetchDeepSeekBalance()
-  const balancePoll = setInterval(fetchDeepSeekBalance, 3600 * 1000)
+  refreshSelectedBalance()
+  const balancePoll = setInterval(refreshSelectedBalance, 3600 * 1000)
 
   ipcMain.handle('read-clipboard', () => {
     try { return clipboard.readText() } catch { return '' }

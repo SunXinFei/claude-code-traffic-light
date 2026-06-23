@@ -21,6 +21,7 @@ macOS 浮动红绿灯，一眼看懂 Claude Code 在干嘛。[English](README_EN
 - **真正置顶** — Electron 窗口置顶，全屏/多桌面都能看到
 - **精美 UI** — CSS 交通灯，呼吸/脉冲/环形动画，深色/浅色主题
 - **AI 余额光环** — Apple Watch 风格渐变色环（红→橙→黄→绿），直观显示 DeepSeek API 余额比例
+- **火山 Coding Plan 用量** — 接入火山引擎 Ark `GetCodingPlanUsage` 接口，展示 Claude Code 套餐的 session / weekly / monthly 三档配额使用百分比与重置时间
 - **声音提示** — Web Audio 合成提示音，可静音
 - **多项目** — 同时跑多个 Claude Code 会话，自动切换，托盘菜单也可手动选择
 - **点击跳转** — 点击灯泡，自动跳转到对应项目所在的 IDE 窗口（支持 VSCode/Cursor/Windsurf 等）
@@ -31,7 +32,7 @@ macOS 浮动红绿灯，一眼看懂 Claude Code 在干嘛。[English](README_EN
 
 ## 安装
 
-从 [Releases](https://github.com/DemoJj/claude-code-traffic-light/releases) 下载 `.dmg`，拖进 Applications 即可。
+从 [Releases](https://github.com/SunXinFei/claude-code-traffic-light/releases) 下载 `.dmg`，拖进 Applications 即可。
 
 ## 开发
 
@@ -62,12 +63,35 @@ npm run dist:win
 
 ## AI 余额光环
 
-灯光外圈有一道 Apple Watch 运动环风格的渐变色环，显示 DeepSeek API 余额比例。
+灯光外圈有一道 Apple Watch 运动环风格的渐变色环，显示当前启用 provider 的用量比例。支持两个 provider，互斥切换：
+
+### DeepSeek（现金余额）
 
 - **渐变色**：红 → 橙 → 黄 → 绿，余额越低越偏红
 - **比例计算**：`当前余额 / 手动预算`，未设预算时自动用充值额度
 - **API Key**：优先读环境变量 `DEEPSEEK_API_KEY`，也可在设置弹窗中配置
 - **设置弹窗**：点击灯光下方的余额文案或设置面板中的"AI 设置"按钮打开
+
+### 火山 Ark · Claude Code Coding Plan（套餐配额）
+
+展示 Claude Code 套餐的三档配额使用百分比：
+
+| Level | 含义 | 数据来源 |
+|-------|------|----------|
+| Session | 当前会话用量 | `QuotaUsage[Level=session]` |
+| Weekly | 近 1 周累计用量 | `QuotaUsage[Level=weekly]` |
+| Monthly | 近 1 月累计用量 | `QuotaUsage[Level=monthly]` |
+
+- **外环比例**：`1 - monthly.percent / 100`（monthly 剩余比例，用得越多环越空）
+- **主界面小字**：`Ark 2%/0%/5%`（session / weekly / monthly）
+- **悬浮 tooltip**：完整三档百分比 + monthly 剩余
+- **设置卡片**：每档单独显示已用百分比、剩余百分比、相对重置时间（如 `6天07时07分后刷新`）
+- **认证**：火山引擎 IAM Access Key ID + Secret Access Key（长期密钥）
+  - 优先读环境变量 `VOLC_AK` / `VOLC_SK`，也可在设置弹窗中配置
+  - AK/SK 以对象形式存储在 `~/.claude/traffic_light/api_keys.json` 的 `volcengine` 字段
+- **签名**：HMAC-SHA256 预签名 URL，host 参与签名，body 不签名（`X-NotSignBody=1`），实现见 `electron/volcSign.cjs`
+- **接口**：`POST https://ark.cn-beijing.volcengineapi.com?Action=GetCodingPlanUsage&Version=2024-01-01`
+- **刷新**：启动时拉一次，之后每小时自动刷新；设置弹窗里也有"刷新用量"按钮
 
 ## 要求
 

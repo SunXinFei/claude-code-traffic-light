@@ -19,3 +19,4 @@ release/
 __pycache__/
 *.py[cod]
 venv/
+volcengine-nodejs-sdk/
