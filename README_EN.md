@@ -3,10 +3,18 @@
 A macOS floating traffic light that shows what Claude Code is doing at a glance. [中文](README.md)
 
 ![macOS](https://img.shields.io/badge/macOS-supported-blue)
+![Windows](https://img.shields.io/badge/Windows-supported-blue)
 ![Electron](https://img.shields.io/badge/Electron-31-blue)
-![License](https://img.shields.io/license/MIT-yellow)
 
-![Screenshot](image.png)
+## Demos
+
+### Triple-light mode (yellow · waiting for user confirmation)
+
+![Triple-light mode](demo1.gif)
+
+### Single-light mode (red breathing · busy)
+
+![Red breathing](demo2.gif)
 
 ## Light Meanings
 

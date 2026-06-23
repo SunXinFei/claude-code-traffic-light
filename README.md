@@ -3,10 +3,18 @@
 macOS 浮动红绿灯，一眼看懂 Claude Code 在干嘛。[English](README_EN.md)
 
 ![macOS](https://img.shields.io/badge/macOS-supported-blue)
+![Windows](https://img.shields.io/badge/Windows-supported-blue)
 ![Electron](https://img.shields.io/badge/Electron-31-blue)
-![License](https://img.shields.io/license/MIT-yellow)
 
-![Screenshot](image.png)
+## 演示
+
+### 三灯模式（黄灯 · 等待用户确认）
+
+![三灯模式](demo1.gif)
+
+### 单灯模式（红灯呼吸 · 忙碌）
+
+![红灯呼吸](demo2.gif)
 
 ## 灯的含义
 
