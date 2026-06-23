@@ -47,6 +47,9 @@ jobs:
           node-version: 22
           cache: npm
 
+      - name: Clear npm cache (Windows lifecycle workaround)
+        run: npm cache clean --force
+
       - run: npm ci
 
       - run: npm run build
