@@ -8,6 +8,16 @@ A macOS floating traffic light that shows what Claude Code is doing at a glance.
 
 ![Screenshot](image.png)
 
+## Demos
+
+### Traffic light state switching (1)
+
+![Traffic light demo 1](demo1.gif)
+
+### Traffic light state switching (2)
+
+![Traffic light demo 2](demo2.gif)
+
 ## Light Meanings
 
 | Light | Status | Description |

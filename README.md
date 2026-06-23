@@ -8,6 +8,16 @@ macOS 浮动红绿灯，一眼看懂 Claude Code 在干嘛。[English](README_EN
 
 ![Screenshot](image.png)
 
+## 演示
+
+### 红绿灯状态切换（一）
+
+![红绿灯演示 1](demo1.gif)
+
+### 红绿灯状态切换（二）
+
+![红绿灯演示 2](demo2.gif)
+
 ## 灯的含义
 
 | 灯 | 状态 | 含义 |
