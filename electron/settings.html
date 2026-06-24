@@ -213,7 +213,6 @@
 
     async function init() {
       const key = await window.electronAPI.getApiKey('deepseek')
-      dsEnabled = !!key
       if (key) {
         document.getElementById('ds-key').value = key
       }
@@ -223,13 +222,17 @@
       }
 
       const cred = await window.electronAPI.getVolcCredentials()
-      volcEnabled = !!(cred && cred.accessKeyId && cred.secretAccessKey)
       if (cred && cred.accessKeyId) {
         document.getElementById('volc-ak').value = cred.accessKeyId
       }
       if (cred && cred.secretAccessKey) {
         document.getElementById('volc-sk').value = cred.secretAccessKey
       }
+
+      // 开关状态由 selected_provider 决定, 而非 key 是否存在
+      const selected = await window.electronAPI.getSelectedProvider()
+      dsEnabled = (selected === 'deepseek')
+      volcEnabled = (selected === 'volcengine')
 
       updateToggleUI()
       updateVolcToggleUI()
@@ -260,18 +263,26 @@
 
     function toggleDeepSeek() {
       dsEnabled = !dsEnabled
-      updateToggleUI()
       if (dsEnabled) {
+        volcEnabled = false
         window.electronAPI.selectProvider('deepseek')
+      } else {
+        window.electronAPI.selectProvider(null)
       }
+      updateToggleUI()
+      updateVolcToggleUI()
     }
 
     function toggleVolc() {
       volcEnabled = !volcEnabled
-      updateVolcToggleUI()
       if (volcEnabled) {
+        dsEnabled = false
         window.electronAPI.selectProvider('volcengine')
+      } else {
+        window.electronAPI.selectProvider(null)
       }
+      updateToggleUI()
+      updateVolcToggleUI()
     }
 
     function updateVolcToggleUI() {

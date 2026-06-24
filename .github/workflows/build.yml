@@ -20,7 +20,7 @@ jobs:
           node-version: 22
           cache: npm
 
-      - run: npm ci
+      - run: npm install --no-audit --no-fund
 
       - run: npm run build
 
@@ -47,10 +47,7 @@ jobs:
           node-version: 22
           cache: npm
 
-      - name: Clear npm cache (Windows lifecycle workaround)
-        run: npm cache clean --force
-
-      - run: npm ci
+      - run: npm install --no-audit --no-fund
 
       - run: npm run build
 
