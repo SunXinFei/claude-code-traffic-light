@@ -16,6 +16,16 @@ A macOS floating traffic light that shows what Claude Code is doing at a glance.
 
 ![Red breathing](demo2.gif)
 
+## Demos
+
+### Triple-light mode (yellow · waiting for user confirmation)
+
+![Triple-light mode](demo1.gif)
+
+### Single-light mode (yellow · waiting for user confirmation)
+
+![Single-light mode](demo2.gif)
+
 ## Light Meanings
 
 | Light | Status | Description |

@@ -137,6 +137,32 @@ function setSelectedProvider(p) {
   }
 }
 
+// Read which AI service Claude Code is actually using right now, by inspecting
+// ~/.claude/settings.json -> env.ANTHROPIC_BASE_URL. cc-switch and similar
+// tools all flip this field, so it's the single source of truth.
+function detectProviderFromClaudeConfig() {
+  try {
+    const s = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'))
+    const baseUrl = (s.env && s.env.ANTHROPIC_BASE_URL || '').toLowerCase()
+    if (!baseUrl) return null
+    if (baseUrl.includes('volces.com') || baseUrl.includes('ark.cn-beijing')) return 'volcengine'
+    if (baseUrl.includes('deepseek.com')) return 'deepseek'
+    return null
+  } catch { return null }
+}
+
+// If Claude's config points at a different provider than the one we're showing,
+// switch to it. Returns the provider now in effect.
+function syncProviderFromClaudeConfig() {
+  const detected = detectProviderFromClaudeConfig()
+  if (!detected) return getSelectedProvider()
+  if (detected !== getSelectedProvider()) {
+    console.log(`[balance] provider auto-sync: ${getSelectedProvider()} -> ${detected} (from Claude config)`)
+    setSelectedProvider(detected)
+  }
+  return detected
+}
+
 // ---------- DeepSeek Balance ----------
 
 let lastBalance = null  // { balance_infos: [...], ... }
@@ -303,7 +329,7 @@ function fetchVolcArkUsage() {
 }
 
 function refreshSelectedBalance() {
-  const p = getSelectedProvider()
+  const p = syncProviderFromClaudeConfig()
   if (p === 'volcengine') fetchVolcArkUsage()
   else if (p === 'deepseek') fetchDeepSeekBalance()
   else {
@@ -314,72 +340,227 @@ function refreshSelectedBalance() {
 
 // ---------- Activate host app ----------
 
-function activateHostApp(projectName) {
+// Known host apps. `matchers` are substrings matched (case-insensitive)
+// against TERM_PROGRAM and any ancestor process name. Order matters for the
+// Windows running-process fallback: editors first, terminals last.
+// `macProc` is the System Events process name (defaults to macName when not
+// set) — needed for Electron apps whose executable name differs from the
+// display name (e.g. VSCode runs as "Code").
+const HOST_APPS = [
+  { matchers: ['vscode'],             macName: 'Visual Studio Code', macProc: 'Code', macCli: 'code',     macCliReuse: true, winProc: 'Code' },
+  { matchers: ['cursor'],             macName: 'Cursor',             macCli: 'cursor', macCliReuse: true, winProc: 'Cursor' },
+  { matchers: ['windsurf'],           macName: 'Windsurf',           macCli: 'windsurf', macCliReuse: true, winProc: 'Windsurf' },
+  { matchers: ['zed'],                macName: 'Zed',                macCli: 'zed',   winProc: 'zed' },
+  { matchers: ['sublime', 'subl'],    macName: 'Sublime Text',       macCli: 'subl',  winProc: 'sublime_text' },
+  { matchers: ['webstorm', 'wstorm'], macName: 'WebStorm',           macCli: 'wstorm', winProc: 'webstorm64' },
+  { matchers: ['intellij'],           macName: 'IntelliJ IDEA',      winProc: 'idea64' },
+  { matchers: ['iterm'],              macName: 'iTerm',              winProc: null },
+  { matchers: ['apple_terminal'],     macName: 'Terminal',           winProc: null },
+  { matchers: ['warp'],               macName: 'Warp',               winProc: null },
+  { matchers: ['ghostty'],            macName: 'Ghostty',            winProc: null },
+  { matchers: ['kitty'],              macName: 'kitty',              winProc: null },
+  { matchers: ['alacritty'],          macName: 'Alacritty',          winProc: null },
+  { matchers: ['windowsterminal'],    macName: null,                 winProc: 'WindowsTerminal' },
+  { matchers: ['powershell', 'pwsh'], macName: null,                 winProc: 'pwsh' },
+  { matchers: ['cmd.exe'],            macName: null,                 winProc: 'cmd' },
+]
+
+// Resolve which host app a Claude session is running inside. `info` carries
+// term_program (TERM_PROGRAM) and vscode_ipc (VSCODE_IPC_HOOK). `extra` is
+// extra candidate strings (e.g. ancestor process names) for the fallback.
+//
+// VSCode, Cursor, and Windsurf all set TERM_PROGRAM="vscode" — they're forks.
+// The VSCODE_IPC_HOOK socket path embeds the real app name, so we use it to
+// disambiguate (and pick the right CLI: `code` vs `cursor` vs `windsurf`).
+function findHostApp(info, ...extra) {
+  const tp = (info && info.term_program || '').toLowerCase()
+  const ipc = (info && info.vscode_ipc || '').toLowerCase()
+  if (tp.includes('vscode') || ipc.includes('cursor') || ipc.includes('windsurf') || ipc.includes('vscode-ipc')) {
+    if (ipc.includes('cursor'))   return HOST_APPS.find(a => a.matchers.includes('cursor'))
+    if (ipc.includes('windsurf')) return HOST_APPS.find(a => a.matchers.includes('windsurf'))
+    return HOST_APPS.find(a => a.matchers.includes('vscode'))
+  }
+  const hay = [info && info.term_program, ...extra].filter(Boolean).join(' ').toLowerCase()
+  if (!hay) return null
+  return HOST_APPS.find(a => a.matchers.some(m => hay.includes(m))) || null
+}
+
+function readAppInfo(projectName) {
   const appFile = getAppFile(projectName)
-  const dirFile = path.join(STATE_DIR, `${projectName}.dir`)
+  if (!fs.existsSync(appFile)) return null
+  let raw
+  try { raw = fs.readFileSync(appFile, 'utf-8').trim() } catch { return null }
+  if (!raw) return null
+  try { return JSON.parse(raw) } catch {}
+  // Fallback: non-JSON. The Windows batch hook writes two lines
+  // (term_program\nvscode_ipc) because building JSON with escaped backslashes
+  // in cmd is fragile.
+  const lines = raw.split(/\r?\n/).map(s => s.trim()).filter(Boolean)
+  return { term_program: lines[0] || '', vscode_ipc: lines[1] || '' }
+}
 
-  if (!fs.existsSync(appFile)) return
+// Walk the parent process chain from `startPid`, returning ancestor names
+// joined by spaces. Used to recover the host app when TERM_PROGRAM is unset.
+function macAncestorNames(startPid) {
+  const names = []
+  let pid = parseInt(startPid, 10)
+  for (let i = 0; i < 10 && pid > 1; i++) {
+    let name
+    try {
+      name = child_process.execFileSync('ps', ['-o', 'comm=', '-p', String(pid)], { encoding: 'utf-8', timeout: 1500 }).trim()
+    } catch { break }
+    if (!name) break
+    names.push(path.basename(name))
+    let ppidStr
+    try {
+      ppidStr = child_process.execFileSync('ps', ['-o', 'ppid=', '-p', String(pid)], { encoding: 'utf-8', timeout: 1500 }).trim()
+    } catch { break }
+    const next = parseInt(ppidStr, 10)
+    if (!next || next === pid) break
+    pid = next
+  }
+  return names.join(' ')
+}
 
+function winAncestorNames(startPid) {
+  const script = `$p=[int]${parseInt(startPid, 10)}; $n=''; for($i=0;$i -lt 10 -and $p -gt 0;$i++){$x=Get-CimInstance Win32_Process -Filter \"ProcessId=$p\" -ErrorAction SilentlyContinue; if(-not $x){break}; $n += ' ' + $x.Name; $p=[int]$x.ParentProcessId}; $n.Trim()`
   try {
-    const appInfo = JSON.parse(fs.readFileSync(appFile, 'utf-8'))
-    const appName = appInfo.appName || appInfo.term_program || ''
+    return child_process.execFileSync('powershell', ['-NoProfile', '-Command', script], { encoding: 'utf-8', timeout: 4000 }).trim()
+  } catch { return '' }
+}
 
-    // Read project dir
-    let projectDir = ''
-    if (fs.existsSync(dirFile)) {
-      try { projectDir = fs.readFileSync(dirFile, 'utf-8').trim() } catch {}
+function findRunningWinHost() {
+  try {
+    const out = child_process.execFileSync('tasklist', ['/FO', 'CSV', '/NH'], { encoding: 'utf-8', timeout: 3000 })
+    const running = new Set()
+    for (const line of out.split(/\r?\n/)) {
+      const m = line.match(/^"([^"]+)"/)
+      if (m) running.add(m[1].replace(/\.exe$/i, ''))
     }
+    return HOST_APPS.find(a => a.winProc && running.has(a.winProc)) || null
+  } catch { return null }
+}
 
-    const lower = appName.toLowerCase()
+function activateMacApp(appName) {
+  try {
+    child_process.execFileSync('osascript', ['-e', `tell application "${appName}" to activate`], { timeout: 3000 })
+  } catch {}
+}
 
-    // For VSCode-like editors: use CLI to open/focus the project folder in existing window
-    if (projectDir) {
-      const cliMap = {
-        'vscode':    ['code', '/usr/local/bin/code', '/opt/homebrew/bin/code'],
-        'cursor':    ['cursor', '/usr/local/bin/cursor', '/opt/homebrew/bin/cursor'],
-        'windsurf':  ['windsurf', '/usr/local/bin/windsurf', '/opt/homebrew/bin/windsurf'],
-        'sublime':   ['subl', '/usr/local/bin/subl', '/opt/homebrew/bin/subl'],
-        'zed':       ['zed', '/usr/local/bin/zed', '/opt/homebrew/bin/zed'],
-        'webstorm':  ['wstorm', '/usr/local/bin/wstorm', '/opt/homebrew/bin/wstorm'],
-      }
-      const cliCandidates = cliMap[lower]
-      if (cliCandidates) {
-        // Find the actual CLI path (Finder-launched apps don't have full PATH)
-        let cli = cliCandidates.find(p => fs.existsSync(p))
-        if (!cli) {
-          try { cli = child_process.execSync(`which ${cliCandidates[0]} 2>/dev/null`).toString().trim() } catch {}
-        }
-        if (cli) {
-          try {
-            child_process.execSync(`"${cli}" -r -g "${projectDir}"`, { timeout: 5000 })
-            return
-          } catch {}
-        }
-      }
+// Escape a string for safe embedding inside an AppleScript double-quoted string.
+function escAppleScript(s) {
+  return String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+}
+
+// Activate `appName` and, if `folderBasename` is given, bring the window whose
+// title contains it to the front. Editors' window titles include the workspace
+// folder name (VSCode default: "${activeEditorShort} — ${rootName}"), so this
+// picks the right window among several open ones. Uses System Events because
+// Electron apps don't expose a `windows` collection through their own AppleScript
+// suite. Falls back to plain activate if no window matches or System Events is
+// unavailable (missing accessibility permission).
+function activateMacAppWindow(appName, procName, folderBasename) {
+  if (!folderBasename) { activateMacApp(appName); return }
+  const script = `
+tell application "${escAppleScript(appName)}" to activate
+delay 0.4
+tell application "System Events"
+  tell process "${escAppleScript(procName)}"
+    set targetWin to missing value
+    repeat with w in windows
+      if name of w contains "${escAppleScript(folderBasename)}" then
+        set targetWin to w
+        exit repeat
+      end if
+    end repeat
+    if targetWin is not missing value then
+      perform action "AXRaise" of targetWin
+    end if
+  end tell
+end tell`.trim()
+  try {
+    child_process.execFileSync('osascript', ['-e', script], { timeout: 3000 })
+  } catch {
+    activateMacApp(appName)
+  }
+}
+
+function activateWinApp(procName) {
+  const script = `
+Add-Type @"
+using System; using System.Runtime.InteropServices;
+public class Win {
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr h, int n);
+}
+"@
+$pr = Get-Process -Name '${procName}' -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne [IntPtr]::Zero } | Select-Object -First 1
+if ($pr) { [void][Win]::ShowWindowAsync($pr.MainWindowHandle, 9); [void][Win]::SetForegroundWindow($pr.MainWindowHandle) }
+`.trim()
+  try {
+    child_process.execFileSync('powershell', ['-NoProfile', '-Command', script], { encoding: 'utf-8', timeout: 5000 })
+  } catch {}
+}
+
+// Layer 1 (Mac): editor CLI with reuse-window. `code -r $dir` / `cursor -r $dir`
+// tells the editor to focus the workspace if already open (the editor knows its
+// own windows far better than we can guess from titles). Returns true on success
+// so the caller can skip the AppleScript fallbacks.
+function tryMacCli(host, projectDir) {
+  if (!host.macCli || !projectDir) return false
+  // Prefer `which` (respects the launching shell's PATH, incl. nvm/homebrew);
+  // fall back to common install dirs for Dock-launched apps with minimal PATH.
+  let cli = ''
+  try { cli = child_process.execSync(`which ${host.macCli} 2>/dev/null`).toString().trim() } catch {}
+  if (!cli) {
+    for (const p of [`/usr/local/bin/${host.macCli}`, `/opt/homebrew/bin/${host.macCli}`]) {
+      if (fs.existsSync(p)) { cli = p; break }
     }
+  }
+  if (!cli) return false
+  const args = host.macCliReuse ? ['-r', projectDir] : [projectDir]
+  try {
+    child_process.execFileSync(cli, args, { timeout: 5000 })
+    return true
+  } catch { return false }
+}
 
-    // Fallback for terminals/other apps: just activate by name
-    const nameMap = {
-      'vscode':    'Visual Studio Code',
-      'cursor':    'Cursor',
-      'windsurf':  'Windsurf',
-      'sublime':   'Sublime Text',
-      'zed':       'Zed',
-      'webstorm':  'WebStorm',
-      'iterm':     'iTerm',
-      'iterm2':    'iTerm2',
-      'terminal':  'Terminal',
-      'warp':      'Warp',
-      'ghostty':   'Ghostty',
-      'kitty':     'kitty',
-      'alacritty': 'Alacritty',
-    }
-    const displayName = nameMap[lower]
-    if (displayName) {
-      child_process.execSync(`osascript -e 'tell application "${displayName}" to activate'`, { timeout: 3000 })
+function activateHostApp(projectName) {
+  const info = readAppInfo(projectName)
+  if (!info) return
+
+  let host = findHostApp(info)
+  if (!host && info.ppid) {
+    const ancestors = process.platform === 'darwin' ? macAncestorNames(info.ppid) : winAncestorNames(info.ppid)
+    host = findHostApp(info, ancestors)
+  }
+  // Last resort on Windows: pick a known running terminal/editor.
+  if (!host && process.platform === 'win32') {
+    host = findRunningWinHost()
+  }
+  if (!host) return
+
+  // Read project dir once (used by CLI layer and the title-match layer).
+  let projectDir = ''
+  const dirFile = path.join(STATE_DIR, `${projectName}.dir`)
+  try { if (fs.existsSync(dirFile)) projectDir = fs.readFileSync(dirFile, 'utf-8').trim() } catch {}
+  const folderBasename = projectDir ? path.basename(projectDir) : ''
+
+  if (process.platform === 'darwin') {
+    if (!host.macName) return
+    // Layer 1: editor CLI reuse-window — most reliable, focuses the exact workspace.
+    if (tryMacCli(host, projectDir)) return
+    // Layer 2: AppleScript title match via System Events (needs Accessibility).
+    // Editors' window titles contain the workspace folder name.
+    if (folderBasename) {
+      activateMacAppWindow(host.macName, host.macProc || host.macName, folderBasename)
       return
     }
-  } catch {}
+    // Layer 3: terminals / no folder info — just activate the app.
+    activateMacApp(host.macName)
+  } else if (process.platform === 'win32' && host.winProc) {
+    activateWinApp(host.winProc)
+  }
 }
 
 // ---------- Persistence helpers ----------
@@ -414,19 +595,21 @@ function setupClaudeHooks() {
 
   // Per-project: write state + dir + app info
   const projectCmd = (color) => {
-    const marker = `# ${TRAFFIC_MARKER}`
     if (isWin) {
-      return `cmd /c "echo ${color}> %USERPROFILE%\\.claude\\traffic_light\\%basename:${'{'}CLAUDE_PROJECT_DIR:${'}'}%.state ${marker}"`
+      // %~nxF = leaf of CLAUDE_PROJECT_DIR; <nul set /p writes without newline.
+      // .app gets two lines (term_program\nvscode_ipc) — JSON with escaped
+      // backslashes is too fragile in cmd, and readAppInfo parses this shape.
+      return `for %F in ("%CLAUDE_PROJECT_DIR%") do @(echo ${color}>"%USERPROFILE%\\.claude\\traffic_light\\%~nxF.state" & <nul set /p =%CLAUDE_PROJECT_DIR%>"%USERPROFILE%\\.claude\\traffic_light\\%~nxF.dir" & (echo %TERM_PROGRAM%& echo %VSCODE_IPC_HOOK%)>"%USERPROFILE%\\.claude\\traffic_light\\%~nxF.app") & REM ${TRAFFIC_MARKER}`
     }
-    return `project=$(basename "$\{CLAUDE_PROJECT_DIR:-$PWD}") && mkdir -p ${STATE_DIR} && echo ${color} > ${STATE_DIR}/"$project".state && echo "$\{CLAUDE_PROJECT_DIR:-$PWD}" > ${STATE_DIR}/"$project".dir && printf '{"appName":"%s","term_program":"%s","vscode_ipc":"%s"}' "$\{TERM_PROGRAM:-}" "$\{TERM_PROGRAM:-}" "$\{VSCODE_IPC_HOOK:-}" > ${STATE_DIR}/"$project".app ${marker}`
+    return `project=$(basename "$\{CLAUDE_PROJECT_DIR:-$PWD}") && mkdir -p ${STATE_DIR} && echo ${color} > ${STATE_DIR}/"$project".state && echo "$\{CLAUDE_PROJECT_DIR:-$PWD}" > ${STATE_DIR}/"$project".dir && printf '{"term_program":"%s","ppid":"%s","vscode_ipc":"%s"}' "$\{TERM_PROGRAM:-}" "$\{PPID:-}" "$\{VSCODE_IPC_HOOK:-}" > ${STATE_DIR}/"$project".app # ${TRAFFIC_MARKER}`
   }
 
   // SessionEnd: clean up project files
   const sessionEndCmd = () => {
     if (isWin) {
-      return `cmd /c "del /q %USERPROFILE%\\.claude\\traffic_light\\%basename:${'{'}CLAUDE_PROJECT_DIR:${'}'}%.state %USERPROFILE%\\.claude\\traffic_light\\%basename:${'{'}CLAUDE_PROJECT_DIR:${'}'}%.dir %USERPROFILE%\\.claude\\traffic_light\\%basename:${'{'}CLAUDE_PROJECT_DIR:${'}'}%.app 2>nul"`
+      return `for %F in ("%CLAUDE_PROJECT_DIR%") do @del /q "%USERPROFILE%\\.claude\\traffic_light\\%~nxF.state" "%USERPROFILE%\\.claude\\traffic_light\\%~nxF.dir" "%USERPROFILE%\\.claude\\traffic_light\\%~nxF.app" 2>nul & REM ${TRAFFIC_MARKER}`
     }
-    return `project=$(basename "$\{CLAUDE_PROJECT_DIR:-$PWD}") && rm -f ${STATE_DIR}/"$project".state ${STATE_DIR}/"$project".dir ${STATE_DIR}/"$project".app ${TRAFFIC_MARKER}`
+    return `project=$(basename "$\{CLAUDE_PROJECT_DIR:-$PWD}") && rm -f ${STATE_DIR}/"$project".state ${STATE_DIR}/"$project".dir ${STATE_DIR}/"$project".app # ${TRAFFIC_MARKER}`
   }
 
   // Tools that require user permission — yellow = waiting for you
