@@ -1,6 +1,6 @@
 # Claude Code Traffic Light 🚦
 
-macOS 浮动红绿灯，一眼看懂 Claude Code 在干嘛。[English](README_EN.md)
+macOS / Windows 浮动红绿灯，一眼看懂 Claude Code 在干嘛。[English](README_EN.md)
 
 ![macOS](https://img.shields.io/badge/macOS-supported-blue)
 ![Windows](https://img.shields.io/badge/Windows-supported-blue)
@@ -16,22 +16,12 @@ macOS 浮动红绿灯，一眼看懂 Claude Code 在干嘛。[English](README_EN
 
 ![红灯呼吸](demo2.gif)
 
-## 演示
-
-### 三灯模式（黄灯 · 等待用户确认）
-
-![三灯模式](demo1.gif)
-
-### 单灯模式（黄灯 · 等待用户确认）
-
-![单灯模式](demo2.gif)
-
 ## 灯的含义
 
 | 灯 | 状态 | 含义 |
 |----|------|------|
 | 🔴 红灯呼吸 | 忙碌 | Claude 正在处理/调用工具 |
-| 🟡 黄灯闪烁 | 等你 | Claude 在问你问题，等你回答 |
+| 🟡 黄灯闪烁 | 等你 | Claude 在问你问题，等你yes |
 | 🟢 绿灯常亮 | 完成 | Claude 处理完毕，等你输入 |
 
 ## 功能
@@ -50,7 +40,10 @@ macOS 浮动红绿灯，一眼看懂 Claude Code 在干嘛。[English](README_EN
 
 ## 安装
 
-从 [Releases](https://github.com/SunXinFei/claude-code-traffic-light/releases) 下载 `.dmg`，拖进 Applications 即可。
+从 [Releases](https://github.com/SunXinFei/claude-code-traffic-light/releases) 下载对应平台安装包：
+
+- **macOS**：`.dmg`，拖进 Applications 即可
+- **Windows**：`.exe` 安装包，双击安装即可
 
 ## 开发
 
@@ -113,7 +106,7 @@ npm run dist:win
 
 ## 要求
 
-- macOS 12+
+- macOS 12+ 或 Windows 10/11
 - Node.js 18+（仅开发/构建时需要）
 
 ## License
