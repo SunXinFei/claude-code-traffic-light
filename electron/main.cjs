@@ -612,7 +612,7 @@ function setupClaudeHooks() {
     return `project=$(basename "$\{CLAUDE_PROJECT_DIR:-$PWD}") && rm -f ${STATE_DIR}/"$project".state ${STATE_DIR}/"$project".dir ${STATE_DIR}/"$project".app # ${TRAFFIC_MARKER}`
   }
 
-  // Tools that require user permission — yellow = waiting for you
+  // Tool execution = red. Yellow fires on PermissionRequest (auth dialog) and AskUserQuestion.
   const PERMISSION_TOOLS = 'Bash|Write|Edit|Read|NotebookEdit|WebFetch|mcp__'
 
   const HOOKS_TO_ADD = [
@@ -624,10 +624,12 @@ function setupClaudeHooks() {
     { event: 'StopFailure',      command: projectCmd('green') },
     { event: 'PreToolUse',       matcher: 'AskUserQuestion', command: stateCmd('yellow') },
     { event: 'PreToolUse',       matcher: 'AskUserQuestion', command: projectCmd('yellow') },
-    { event: 'PreToolUse',       matcher: PERMISSION_TOOLS, command: stateCmd('yellow') },
-    { event: 'PreToolUse',       matcher: PERMISSION_TOOLS, command: projectCmd('yellow') },
+    { event: 'PreToolUse',       matcher: PERMISSION_TOOLS, command: stateCmd('red') },
+    { event: 'PreToolUse',       matcher: PERMISSION_TOOLS, command: projectCmd('red') },
     { event: 'PostToolUse',      matcher: PERMISSION_TOOLS, command: stateCmd('red') },
     { event: 'PostToolUse',      matcher: PERMISSION_TOOLS, command: projectCmd('red') },
+    { event: 'PermissionRequest', command: stateCmd('yellow') },
+    { event: 'PermissionRequest', command: projectCmd('yellow') },
     { event: 'SessionEnd',       command: sessionEndCmd() },
   ]
 
