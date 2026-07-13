@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-07-13
+
 ### 新增
 
 - **集成 cc-switch 的切模型能力** - 在设置面板与托盘菜单中一键切换 Claude Code 实际使用的 API 供应商，复刻自 [cc-switch](https://github.com/farion1231/cc-switch) 的核心能力，无需另装工具
