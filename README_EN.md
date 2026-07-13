@@ -40,6 +40,7 @@ A macOS floating traffic light that shows what Claude Code is doing at a glance.
 - **Polished UI** — CSS traffic light with breathing / pulse / ring animations, dark / light themes
 - **AI balance ring** — Apple Watch style gradient ring (red → orange → yellow → green) showing DeepSeek API balance ratio
 - **Volcengine Coding Plan usage** — integrates Volcengine Ark `GetCodingPlanUsage` API, showing session / weekly / monthly quota usage percentages and reset times for Claude Code plans
+- **Model provider switching** - integrates the core of [cc-switch](https://github.com/farion1231/cc-switch); switch Claude Code's API from the settings popup / tray menu (25+ built-in presets, hooks and other config preserved)
 - **Sound cues** — Web Audio synthesized tones, muteable
 - **Multi-project** — run multiple Claude Code sessions, auto-switch; tray menu for manual selection
 - **Click to jump** — click the light to jump to the project's IDE window (VSCode / Cursor / Windsurf, etc.)
@@ -78,6 +79,31 @@ Uses Claude Code [hooks](https://docs.anthropic.com/en/docs/claude-code/hooks) t
 - **Green**: triggered on `Stop` / `StopFailure` (Claude finished, including early exit)
 - **Jump**: identifies host app via hook env vars, locates the project window via IDE CLI
 - **Cleanup**: `SessionEnd` hook removes project files when the session closes
+
+## Claude Model Provider Switching
+
+Integrates the core of [cc-switch](https://github.com/farion1231/cc-switch) - switch the API provider Claude Code actually uses, right from the traffic light, without installing another tool.
+
+### Usage
+
+- **Settings popup**: open "AI 模型设置"; the new "🔀 Claude 模型供应商" section at the top lets you switch by clicking. Supports pin 📌, edit ✏, delete 🗑, add custom, and one-click "import current Claude config"
+- **Tray menu**: right-click the tray icon -> "🔀 切换模型" submenu to quickly switch among configured / pinned / official / current providers
+- **Taking effect**: switching rewrites the `env` in `~/.claude/settings.json`; **restart Claude Code or start a new session for it to take effect**
+
+### Built-in presets
+
+25+ provider presets ship built-in (keys left empty for the user to fill): Claude Official, DeepSeek, Kimi For Coding, Kimi (Moonshot), Zhipu GLM (z.ai / bigmodel), Volcengine Agentplan, BytePlus, DouBao Seed, OpenRouter, SiliconFlow, MiniMax (CN / overseas), Alibaba Bailian For Coding, Baidu Qianfan, StepFun, ModelScope, LongCat, Gemini Native, AWS Bedrock (AKSK), AiHubMix, DMXAPI, PackyCode, APIKEY.FUN, CherryIN, etc. Presets without a key are hidden by default; tick "显示全部" to expand them all.
+
+### Difference from cc-switch (merge-write)
+
+This project's `setupClaudeHooks()` writes hooks into `~/.claude/settings.json`, so switching **cannot overwrite the whole file like cc-switch does** (that would wipe the hooks). Instead it uses a "merge-write":
+
+- `env` is wholly replaced by the provider (no leaking of the previous provider's `ANTHROPIC_MODEL` etc.)
+- Non-provider fields like `hooks` / `permissions` / `mcpServers` / `enabledPlugins` are preserved from the current file
+- Before switching away, the current `env` is backfilled to the outgoing provider, preserving your manual changes made inside Claude Code (model name, extra env, etc.)
+- Sanitized before write (internal fields like `apiFormat` stripped), atomic write (temp file + rename), keys alphabetical, 2-space indent - consistent with cc-switch output
+
+The provider list is persisted at `~/.claude/traffic_light/providers.json`; after switching, the balance ring follows the new `ANTHROPIC_BASE_URL` automatically.
 
 ## AI Balance Ring
 

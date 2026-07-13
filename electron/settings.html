@@ -123,10 +123,96 @@
     }
     .eye-btn:hover { color: rgba(255,255,255,0.7); }
     .hidden { display: none; }
+
+    /* ---------- Claude 模型供应商 ---------- */
+    body { overflow-y: auto; }
+    .cc-list {
+      max-height: 220px; overflow-y: auto; margin: 0 -4px; padding: 0 4px;
+    }
+    .cc-row {
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px 10px; border-radius: 8px; cursor: pointer;
+      background: rgba(255,255,255,0.03); margin-bottom: 6px;
+      border: 1px solid transparent; transition: all 0.15s;
+    }
+    .cc-row:hover { background: rgba(255,255,255,0.07); }
+    .cc-row.active {
+      background: #30D15818; border-color: #30D15855;
+    }
+    .cc-row-info { flex: 1; min-width: 0; }
+    .cc-row-name {
+      font-size: 13px; font-weight: 600; color: #e5e5e7;
+      display: flex; align-items: center; gap: 6px;
+    }
+    .cc-row-url {
+      font-size: 10px; color: rgba(255,255,255,0.4);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .cc-dot {
+      width: 7px; height: 7px; border-radius: 50%; background: #30D158;
+      box-shadow: 0 0 6px #30D158;
+    }
+    .cc-icon-btn {
+      background: none; border: none; color: rgba(255,255,255,0.4);
+      cursor: pointer; font-size: 13px; padding: 2px 4px; border-radius: 4px;
+    }
+    .cc-icon-btn:hover { color: rgba(255,255,255,0.85); background: rgba(255,255,255,0.08); }
+    .cc-icon-btn.danger:hover { color: #FF453A; }
+    .cc-actions { display: flex; gap: 6px; margin-bottom: 10px; }
+    .cc-actions .btn { flex: 1; }
+    .cc-key-field { display: flex; gap: 6px; align-items: center; }
+    .cc-key-field select {
+      padding: 8px 6px; border-radius: 8px; font-size: 11px;
+      border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.06);
+      color: #e5e5e7; max-width: 130px;
+    }
+    .cc-advanced {
+      font-size: 10px; color: rgba(255,255,255,0.5); margin-top: 6px;
+    }
+    .cc-advanced textarea {
+      width: 100%; min-height: 90px; padding: 8px; border-radius: 8px;
+      border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.04);
+      color: #e5e5e7; font-size: 11px; font-family: ui-monospace, monospace;
+      resize: vertical; outline: none; -webkit-user-select: text;
+    }
+    .cc-advanced textarea:focus { border-color: #30D158; }
+    .cc-edit-panel {
+      background: rgba(0,0,0,0.2); border-radius: 10px; padding: 12px; margin-top: 8px;
+    }
+    .cc-toast {
+      position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%);
+      background: #30D158; color: white; font-size: 12px; padding: 8px 16px;
+      border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+      opacity: 0; transition: opacity 0.25s; pointer-events: none; z-index: 99;
+    }
+    .cc-toast.show { opacity: 1; }
+    .cc-toast.err { background: #FF453A; }
   </style>
 </head>
 <body>
   <h1>AI 模型设置</h1>
+
+  <div class="section" id="cc-section">
+    <div class="section-header">
+      <div class="section-title">🔀 Claude 模型供应商</div>
+    </div>
+    <div class="hint" style="margin-bottom:8px;">
+      点击切换 Claude Code 实际使用的 API（env 写入 ~/.claude/settings.json，hooks 等其它配置自动保留）。<b>切换后需重启 Claude Code 或新开会话才生效。</b>
+    </div>
+
+    <label class="hint" style="display:flex;align-items:center;gap:6px;cursor:pointer;margin-bottom:6px;" id="cc-showall-box">
+      <input type="checkbox" onclick="ccShowAll=this.checked;ccRenderList()" style="margin:0;">
+      <span id="cc-showall-count">显示全部</span>
+    </label>
+    <div class="cc-list" id="cc-list"></div>
+
+    <div class="cc-actions">
+      <button class="btn btn-secondary btn-sm" onclick="ccAddCustom()">+ 添加自定义</button>
+      <button class="btn btn-secondary btn-sm" onclick="ccImportLive()" title="把当前 ~/.claude/settings.json 存为一个供应商">导入当前 Claude 配置</button>
+    </div>
+
+    <div id="cc-edit" class="cc-edit-panel hidden"></div>
+  </div>
 
   <div class="section" id="ds-section">
     <div class="section-header">
@@ -496,6 +582,282 @@
     })
 
     init()
+  </script>
+
+  <script>
+    // ---------- Claude 模型供应商（复刻 cc-switch）----------
+    let ccProviders = []
+    let ccShowAll = false
+    let ccCurrent = ''
+    let ccEditing = null  // null | 'new' | provider object
+
+    const CC_MANAGED_KEYS = new Set([
+      'ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY',
+      'ANTHROPIC_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+      'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_OPUS_MODEL',
+    ])
+
+    function ccToast(msg, isErr) {
+      let el = document.getElementById('cc-toast')
+      if (!el) {
+        el = document.createElement('div')
+        el.id = 'cc-toast'
+        el.className = 'cc-toast'
+        document.body.appendChild(el)
+      }
+      el.textContent = msg
+      el.className = 'cc-toast show' + (isErr ? ' err' : '')
+      clearTimeout(el._t)
+      el._t = setTimeout(() => { el.className = 'cc-toast' + (isErr ? ' err' : '') }, 1600)
+    }
+
+    function ccBaseUrl(p) {
+      const env = (p.settingsConfig && p.settingsConfig.env) || {}
+      return env.ANTHROPIC_BASE_URL || ''
+    }
+
+    function ccVisibleProviders() {
+      if (ccShowAll) return ccProviders
+      return ccProviders.filter((p) => {
+        // pinned / current / official / 已填密钥 → 显示
+        if (p.pinned) return true
+        if (p.id === ccCurrent) return true
+        if (p.isOfficial) return true
+        const env = (p.settingsConfig && p.settingsConfig.env) || {}
+        const kf = p.apiKeyField || 'ANTHROPIC_AUTH_TOKEN'
+        return typeof env[kf] === 'string' && env[kf].trim().length > 0
+      })
+    }
+
+    function ccRenderList() {
+      const list = document.getElementById('cc-list')
+      if (!list) return
+      if (!ccProviders.length) {
+        list.innerHTML = '<div class="hint">暂无供应商</div>'
+        return
+      }
+      const visible = ccVisibleProviders()
+      const sorted = [...visible].sort((a, b) => {
+        if (a.pinned && !b.pinned) return -1
+        if (!a.pinned && b.pinned) return 1
+        return (a.sortIndex || 0) - (b.sortIndex || 0)
+      })
+      const hidden = ccProviders.length - visible.length
+
+      list.innerHTML = sorted.map((p) => {
+        const url = ccBaseUrl(p)
+        const active = p.id === ccCurrent
+        const pinIcon = p.pinned ? '📌' : ''
+        const pinBtn = `<button class="cc-icon-btn" onclick="event.stopPropagation();ccTogglePin('${p.id}')" title="${p.pinned ? '取消置顶' : '置顶'}">${p.pinned ? '📌' : '📍'}</button>`
+        const editBtn = `<button class="cc-icon-btn" onclick="event.stopPropagation();ccEdit('${p.id}')" title="编辑">✏</button>`
+        const delBtn = p.isCustom
+          ? `<button class="cc-icon-btn danger" onclick="event.stopPropagation();ccDelete('${p.id}')" title="删除">🗑</button>`
+          : ''
+        return `
+          <div class="cc-row${active ? ' active' : ''}" onclick="ccSwitch('${p.id}')">
+            <div class="cc-row-info">
+              <div class="cc-row-name">
+                ${active ? '<span class="cc-dot"></span>' : ''}
+                ${pinIcon}
+                <span>${ccEsc(p.name)}</span>
+              </div>
+              <div class="cc-row-url">${ccEsc(url) || '(官方 / 空)'}</div>
+            </div>
+            ${pinBtn}${editBtn}${delBtn}
+          </div>
+        `
+      }).join('')
+      if (hidden > 0) {
+        list.innerHTML += `<div class="hint" style="text-align:center;margin-top:4px;">${hidden} 个未配置的已隐藏</div>`
+      }
+      if (document.getElementById('cc-showall-box')) {
+        document.getElementById('cc-showall-count').textContent = ccShowAll ? '收起全部' : `显示全部 (${ccProviders.length})`
+      }
+    }
+
+    async function ccTogglePin(id) {
+      const p = ccProviders.find((x) => x.id === id)
+      if (!p) return
+      p.pinned = !p.pinned
+      await window.electronAPI.ccSaveProvider({ id, pinned: p.pinned })
+      await ccReload()
+    }
+
+    function ccEsc(s) {
+      return String(s == null ? '' : s).replace(/[&<>"']/g, (c) =>
+        ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
+    }
+
+    async function ccReload() {
+      ccProviders = await window.electronAPI.ccGetProviders()
+      ccCurrent = await window.electronAPI.ccGetCurrentProvider()
+      ccRenderList()
+    }
+
+    async function ccSwitch(id) {
+      const r = await window.electronAPI.ccSwitchProvider(id)
+      if (r && r.ok) {
+        ccCurrent = r.current
+        ccRenderList()
+        ccToast(`已切换到 ${r.name} · 重启 Claude Code 生效`)
+      } else {
+        ccToast(r && r.error ? r.error : '切换失败', true)
+      }
+    }
+
+    function ccEdit(id) {
+      const p = ccProviders.find((x) => x.id === id)
+      if (!p) return
+      ccEditing = p
+      ccRenderEdit()
+    }
+
+    function ccAddCustom() {
+      ccEditing = {
+        id: '',
+        name: '',
+        isCustom: true,
+        apiKeyField: 'ANTHROPIC_AUTH_TOKEN',
+        settingsConfig: { env: { ANTHROPIC_BASE_URL: '', ANTHROPIC_AUTH_TOKEN: '' } },
+      }
+      ccRenderEdit()
+    }
+
+    async function ccImportLive() {
+      // 直接把当前 ~/.claude/settings.json 存为一个供应商（Electron 不支持 window.prompt，
+      // 故用默认名导入，用户可再点 ✏ 改名）
+      const r = await window.electronAPI.ccImportFromLive()
+      if (r && r.ok) {
+        ccToast(`已导入「${r.provider.name}」，可点 ✏ 改名`)
+        await ccReload()
+        ccEdit(r.provider.id)
+      } else {
+        ccToast(r && r.error ? r.error : '导入失败', true)
+      }
+    }
+
+    function ccRenderEdit() {
+      const panel = document.getElementById('cc-edit')
+      if (!ccEditing) { panel.classList.add('hidden'); return }
+      const p = ccEditing
+      const env = (p.settingsConfig && p.settingsConfig.env) || {}
+      const keyField = p.apiKeyField || 'ANTHROPIC_AUTH_TOKEN'
+      const keyValue = env[keyField] || ''
+      const extras = Object.keys(env).filter((k) => !CC_MANAGED_KEYS.has(k))
+
+      panel.classList.remove('hidden')
+      panel.innerHTML = `
+        <div class="field">
+          <div class="field-label">名称</div>
+          <input type="text" id="cc-name" value="${ccEsc(p.name)}" placeholder="例如 我的供应商">
+        </div>
+        <div class="field">
+          <div class="field-label">Base URL</div>
+          <input type="text" id="cc-url" value="${ccEsc(env.ANTHROPIC_BASE_URL || '')}" placeholder="https://api.example.com/anthropic">
+        </div>
+        <div class="field">
+          <div class="field-label">API Key 字段</div>
+          <div class="cc-key-field">
+            <select id="cc-keyfield">
+              <option value="ANTHROPIC_AUTH_TOKEN"${keyField === 'ANTHROPIC_AUTH_TOKEN' ? ' selected' : ''}>ANTHROPIC_AUTH_TOKEN</option>
+              <option value="ANTHROPIC_API_KEY"${keyField === 'ANTHROPIC_API_KEY' ? ' selected' : ''}>ANTHROPIC_API_KEY</option>
+            </select>
+            <input type="password" id="cc-key" value="${ccEsc(keyValue)}" placeholder="sk-...">
+            <button class="eye-btn" onclick="toggleEye('cc-key', this)" title="显示/隐藏">&#128065;</button>
+          </div>
+        </div>
+        <div class="field">
+          <div class="field-label">模型（留空则不写入，使用 Claude Code 默认）</div>
+          <input type="text" id="cc-model" value="${ccEsc(env.ANTHROPIC_MODEL || '')}" placeholder="ANTHROPIC_MODEL">
+        </div>
+        <div class="balance-grid">
+          <div class="field" style="margin:0;">
+            <div class="field-label">Haiku</div>
+            <input type="text" id="cc-haiku" value="${ccEsc(env.ANTHROPIC_DEFAULT_HAIKU_MODEL || '')}" placeholder="haiku model">
+          </div>
+          <div class="field" style="margin:0;">
+            <div class="field-label">Sonnet</div>
+            <input type="text" id="cc-sonnet" value="${ccEsc(env.ANTHROPIC_DEFAULT_SONNET_MODEL || '')}" placeholder="sonnet model">
+          </div>
+          <div class="field" style="margin:0;">
+            <div class="field-label">Opus</div>
+            <input type="text" id="cc-opus" value="${ccEsc(env.ANTHROPIC_DEFAULT_OPUS_MODEL || '')}" placeholder="opus model">
+          </div>
+        </div>
+        ${extras.length ? `<div class="hint" style="margin-top:6px;">额外保留: ${ccEsc(extras.join(', '))}</div>` : ''}
+        <div class="actions" style="margin-top:10px;">
+          <button class="btn btn-primary btn-sm" onclick="ccSaveEdit()">保存</button>
+          <button class="btn btn-secondary btn-sm" onclick="ccCancelEdit()">取消</button>
+          ${p.id && p.isCustom ? `<button class="btn btn-secondary btn-sm" style="color:#FF6B6B;" onclick="ccDelete('${p.id}')">删除</button>` : ''}
+        </div>
+      `
+      panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+    }
+
+    function ccCancelEdit() {
+      ccEditing = null
+      document.getElementById('cc-edit').classList.add('hidden')
+    }
+
+    async function ccSaveEdit() {
+      const p = ccEditing
+      if (!p) return
+      const name = document.getElementById('cc-name').value.trim()
+      if (!name) { ccToast('名称不能为空', true); return }
+      const url = document.getElementById('cc-url').value.trim()
+      const keyField = document.getElementById('cc-keyfield').value
+      const key = document.getElementById('cc-key').value
+      const model = document.getElementById('cc-model').value.trim()
+      const haiku = document.getElementById('cc-haiku').value.trim()
+      const sonnet = document.getElementById('cc-sonnet').value.trim()
+      const opus = document.getElementById('cc-opus').value.trim()
+
+      // 保留原 env 中非托管字段（API_TIMEOUT_MS / CLAUDE_CODE_* / AWS_* 等）
+      const oldEnv = (p.settingsConfig && p.settingsConfig.env) || {}
+      const env = {}
+      for (const [k, v] of Object.entries(oldEnv)) {
+        if (!CC_MANAGED_KEYS.has(k)) env[k] = v
+      }
+      if (url) env.ANTHROPIC_BASE_URL = url
+      if (key) env[keyField] = key
+      if (model) env.ANTHROPIC_MODEL = model
+      if (haiku) env.ANTHROPIC_DEFAULT_HAIKU_MODEL = haiku
+      if (sonnet) env.ANTHROPIC_DEFAULT_SONNET_MODEL = sonnet
+      if (opus) env.ANTHROPIC_DEFAULT_OPUS_MODEL = opus
+
+      const r = await window.electronAPI.ccSaveProvider({
+        id: p.id || undefined,
+        name,
+        apiKeyField: keyField,
+        settingsConfig: { env },
+        isCustom: p.isCustom !== false,
+        websiteUrl: p.websiteUrl || '',
+      })
+      if (r && r.ok) {
+        ccToast('已保存')
+        ccEditing = null
+        document.getElementById('cc-edit').classList.add('hidden')
+        await ccReload()
+      } else {
+        ccToast(r && r.error ? r.error : '保存失败', true)
+      }
+    }
+
+    async function ccDelete(id) {
+      const p = ccProviders.find((x) => x.id === id)
+      if (!p) return
+      if (!confirm(`删除供应商「${p.name}」？`)) return
+      await window.electronAPI.ccDeleteProvider(id)
+      if (ccEditing && ccEditing.id === id) ccCancelEdit()
+      ccToast('已删除')
+      await ccReload()
+    }
+
+    // 监听主进程变更通知
+    window.electronAPI.onCcProvidersChanged(() => { ccReload() })
+    window.electronAPI.onCcCurrentChanged((id) => { ccCurrent = id; ccRenderList() })
+
+    ccReload()
   </script>
 </body>
 </html>

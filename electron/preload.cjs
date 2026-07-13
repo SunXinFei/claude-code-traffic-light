@@ -52,4 +52,23 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setVolcCredentials: (ak, sk) => ipcRenderer.send('set-volc-credentials', ak, sk),
   getSelectedProvider: () => ipcRenderer.invoke('get-selected-provider'),
   selectProvider: (p) => ipcRenderer.send('select-provider', p),
+
+  // Claude 模型供应商切换（复刻 cc-switch）
+  ccGetProviders: () => ipcRenderer.invoke('cc:get-providers'),
+  ccGetCurrentProvider: () => ipcRenderer.invoke('cc:get-current-provider'),
+  ccSwitchProvider: (id) => ipcRenderer.invoke('cc:switch-provider', id),
+  ccSaveProvider: (provider) => ipcRenderer.invoke('cc:save-provider', provider),
+  ccDeleteProvider: (id) => ipcRenderer.invoke('cc:delete-provider', id),
+  ccGetLiveSettings: () => ipcRenderer.invoke('cc:get-live-settings'),
+  ccImportFromLive: (name) => ipcRenderer.invoke('cc:import-from-live', name),
+  onCcProvidersChanged: (callback) => {
+    const handler = () => callback()
+    ipcRenderer.on('cc:providers-changed', handler)
+    return () => ipcRenderer.removeListener('cc:providers-changed', handler)
+  },
+  onCcCurrentChanged: (callback) => {
+    const handler = (_, id) => callback(id)
+    ipcRenderer.on('cc:current-changed', handler)
+    return () => ipcRenderer.removeListener('cc:current-changed', handler)
+  },
 })

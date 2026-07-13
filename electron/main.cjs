@@ -6,6 +6,7 @@ const child_process = require('child_process')
 const https = require('https')
 const { URL } = require('url')
 const { buildArkPresignUrl } = require('./volcSign.cjs')
+const providers = require('./providers.cjs')
 
 const TMP          = process.platform === 'win32' ? path.join(os.homedir(), '.claude') : '/tmp'
 const STATE_DIR    = path.join(os.homedir(), '.claude', 'traffic_light')
@@ -83,7 +84,6 @@ function writeApiKeys(keys) {
   try {
     fs.mkdirSync(STATE_DIR, { recursive: true })
     fs.writeFileSync(API_KEYS_FILE, JSON.stringify(keys, null, 2), 'utf-8')
-    console.log('[balance] wrote api_keys.json:', JSON.stringify(keys))
   } catch (e) {
     console.error('[balance] write api_keys.json failed:', e)
   }
@@ -739,6 +739,26 @@ function buildTrayMenu(currentTheme, currentStyle, selectedProject) {
 
   const items = []
 
+  // 模型供应商切换（复刻 cc-switch 的托盘快捷切换；只显示已配置/置顶/官方/当前的）
+  const allProviders = providers.getProviders()
+  const currentProviderId = providers.getCurrentProviderId()
+  const visibleProviders = allProviders.filter(p => providers.isProviderVisible(p, currentProviderId))
+  if (visibleProviders.length > 0) {
+    const modelSubmenu = visibleProviders.map(p => ({
+      label: p.id === currentProviderId ? `● ${p.name}` : p.name,
+      click: () => {
+        try {
+          providers.switchProvider(p.id)
+          syncProviderFromClaudeConfig()
+          refreshSelectedBalance()
+        } catch (e) { console.error('[cc] tray switch failed:', e) }
+        refreshTrayMenu()
+      },
+    }))
+    items.push({ label: '🔀 切换模型', submenu: modelSubmenu })
+    items.push({ type: 'separator' })
+  }
+
   // Project selector as submenu
   if (projects.length > 0) {
     const projectSubmenu = projects.map(p => ({
@@ -793,6 +813,12 @@ function buildTrayMenu(currentTheme, currentStyle, selectedProject) {
   return Menu.buildFromTemplate(items)
 }
 
+// 用当前 theme/style/project 重建托盘菜单（供应商变更后调用）
+function refreshTrayMenu() {
+  if (!tray) return
+  tray.setContextMenu(buildTrayMenu(readTheme(), readStyle(), getSelectedProject()))
+}
+
 // ---------- Settings window ----------
 
 function openSettingsWindow() {
@@ -802,7 +828,7 @@ function openSettingsWindow() {
   }
 
   const { width: sw, height: sh } = screen.getPrimaryDisplay().workAreaSize
-  const w = 340, h = 460
+  const w = 420, h = 620
 
   settingsWin = new BrowserWindow({
     width: w,
@@ -810,7 +836,7 @@ function openSettingsWindow() {
     x: Math.round((sw - w) / 2),
     y: Math.round((sh - h) / 2),
     title: 'AI 模型设置',
-    resizable: false,
+    resizable: true,
     minimizable: false,
     maximizable: false,
     fullscreenable: false,
@@ -1056,6 +1082,58 @@ function createWindow() {
   ipcMain.on('open-settings', () => {
     openSettingsWindow()
   })
+
+  // ---------- Claude 模型供应商切换（复刻 cc-switch 核心）----------
+
+  ipcMain.handle('cc:get-providers', () => providers.getProviders())
+
+  ipcMain.handle('cc:get-current-provider', () => providers.getCurrentProviderId())
+
+  ipcMain.handle('cc:switch-provider', (_, id) => {
+    try {
+      const result = providers.switchProvider(id)
+      // 切换后让余额环跟随新的 env.ANTHROPIC_BASE_URL
+      syncProviderFromClaudeConfig()
+      refreshSelectedBalance()
+      refreshTrayMenu()
+      if (settingsWin) settingsWin.webContents.send('cc:current-changed', result.current)
+      if (mainWin) mainWin.webContents.send('cc:current-changed', result.current)
+      return result
+    } catch (e) {
+      return { ok: false, error: e.message }
+    }
+  })
+
+  ipcMain.handle('cc:save-provider', (_, provider) => {
+    try {
+      const saved = providers.saveProvider(provider)
+      refreshTrayMenu()
+      if (settingsWin) settingsWin.webContents.send('cc:providers-changed')
+      return { ok: true, provider: saved }
+    } catch (e) {
+      return { ok: false, error: e.message }
+    }
+  })
+
+  ipcMain.handle('cc:delete-provider', (_, id) => {
+    const removed = providers.deleteProvider(id)
+    refreshTrayMenu()
+    if (settingsWin) settingsWin.webContents.send('cc:providers-changed')
+    return removed
+  })
+
+  ipcMain.handle('cc:get-live-settings', () => providers.readClaudeSettings())
+
+  ipcMain.handle('cc:import-from-live', (_, name) => {
+    try {
+      const saved = providers.importFromLive(name)
+      refreshTrayMenu()
+      if (settingsWin) settingsWin.webContents.send('cc:providers-changed')
+      return { ok: true, provider: saved }
+    } catch (e) {
+      return { ok: false, error: e.message }
+    }
+  })
 }
 
 // ---------- Detect running Claude Code sessions ----------
@@ -1102,6 +1180,7 @@ app.whenReady().then(() => {
 
   detectRunningSessions()
   setupClaudeHooks()
+  providers.ensureDefaultProviders()
 
   try { fs.writeFileSync(PID_FILE, process.pid.toString()) } catch {}
 
