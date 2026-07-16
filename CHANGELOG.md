@@ -4,6 +4,25 @@
 
 ## [Unreleased]
 
+### 新增
+
+- **多供应商余额/用量查询** - 余额光环从 DeepSeek + 火山 Ark 两个扩展到 10 个大模型供应商
+  - 按量付费余额（金额类）：DeepSeek、阶跃星辰、硅基流动、OpenRouter、Novita AI，只需 API Key
+  - Coding Plan 用量（百分比类）：火山 Ark、Kimi For Coding、智谱 GLM、MiniMax、ZenMux，展示 5h / 周 / 月配额百分比与重置时间
+  - 设置页「大模型余额查询设置」改为下拉切换，凭证字段与「获取密钥」直达链接随供应商动态变化
+  - 智谱 Authorization 不加 Bearer、Novita 金额除以 10000、MiniMax 剩余%反转、火山 level `session` 统一为 `five_hour` 等细节按 cc-switch 源码精确复刻
+  - 向后兼容旧的 DeepSeek API Key 与火山 AK/SK 配置
+
+### 变更
+
+- 设置页 DeepSeek / 火山 Ark 两个独立开关合并为「大模型余额查询设置」大模块，内含两个下拉子模块
+
+### 文档
+
+- README 新增「产品介绍」部分并插入产品介绍图（image.png）
+- README「AI 余额光环」更新为多供应商说明
+- README 新增「迭代计划」：与手机和手表连接、多项目并行最优展示
+
 ## [2.1.0] - 2026-07-13
 
 ### 新增

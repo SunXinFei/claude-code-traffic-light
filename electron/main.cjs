@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, Menu, Tray, nativeImage, screen, clipboard } = require('electron')
+const { app, BrowserWindow, ipcMain, Menu, Tray, nativeImage, screen, clipboard, shell } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const os = require('os')
@@ -90,35 +90,20 @@ function writeApiKeys(keys) {
 }
 
 function getApiKey(provider) {
-  // Priority: env var > config file
-  const envMap = { deepseek: 'DEEPSEEK_API_KEY' }
-  const envKey = process.env[envMap[provider] || `${provider.toUpperCase()}_API_KEY`]
-  if (envKey) return envKey
-  const keys = readApiKeys()
-  return keys[provider] || ''
+  // 统一走 provider 注册表（兼容旧 get-api-key 调用）
+  return getProviderApiKey(provider)
 }
 
 function getVolcCredentials() {
-  const keys = readApiKeys()
-  const v = keys.volcengine || {}
-  const ak = process.env.VOLC_AK || v.accessKeyId || ''
-  const sk = process.env.VOLC_SK || v.secretAccessKey || ''
+  const cfg = getProviderConfig('volcengine')
+  const ak = process.env.VOLC_AK || cfg.accessKeyId || ''
+  const sk = process.env.VOLC_SK || cfg.secretAccessKey || ''
   return { accessKeyId: ak, secretAccessKey: sk }
 }
 
 function setVolcCredentials(ak, sk) {
-  const keys = readApiKeys()
-  if (ak && sk) {
-    keys.volcengine = { accessKeyId: ak, secretAccessKey: sk }
-  } else {
-    delete keys.volcengine
-  }
-  // 切换到 volcengine (互斥: 启用 volcengine 时停用 deepseek)
-  if (ak && sk) keys.selected_provider = 'volcengine'
-  else if (keys.selected_provider === 'volcengine') {
-    keys.selected_provider = keys.deepseek ? 'deepseek' : null
-  }
-  writeApiKeys(keys)
+  // 统一走 provider 注册表存储（互斥由 setProviderConfig 处理）
+  setProviderConfig('volcengine', (ak && sk) ? { accessKeyId: ak, secretAccessKey: sk } : null)
 }
 
 function getSelectedProvider() {
@@ -131,7 +116,8 @@ function getSelectedProvider() {
 
 function setSelectedProvider(p) {
   const keys = readApiKeys()
-  if (p === 'deepseek' || p === 'volcengine' || p === null) {
+  const valid = p === null || !!BALANCE_PROVIDERS[p] || !!CODING_PLAN_PROVIDERS[p] || p === 'volcengine'
+  if (valid) {
     keys.selected_provider = p
     writeApiKeys(keys)
   }
@@ -165,74 +151,231 @@ function syncProviderFromClaudeConfig() {
 
 // ---------- DeepSeek Balance ----------
 
-let lastBalance = null  // { balance_infos: [...], ... }
+let lastBalance = null  // { balance_infos: [...], ... } 或 { provider:'codingplan', quotas:[...] }
+
+// ---------- Provider 注册表（参考 cc-switch）----------
+// 金额类: GET + Bearer，parseBalance 返回 { balance_infos: [{ total_balance, currency }] }
+// 百分比类: parseQuota 返回 { quotas: [{ level:'five_hour'|'weekly'|'monthly', percent, resetTimestamp }] }
+
+function _num(v) {
+  if (typeof v === 'number') return v || 0
+  if (typeof v === 'string') { const n = parseFloat(v); return isNaN(n) ? 0 : n }
+  return 0
+}
+
+// 统一 reset 时间为秒级时间戳（兼容 ISO 字符串 / 秒 / 毫秒；0 或负数视为无）
+function _toResetSecs(v) {
+  if (v == null) return null
+  if (typeof v === 'string') { const t = Date.parse(v); return isNaN(t) ? null : Math.floor(t / 1000) }
+  if (typeof v === 'number') { if (v <= 0) return null; return v < 1e12 ? v : Math.floor(v / 1000) }
+  return null
+}
+
+const BALANCE_PROVIDERS = {
+  deepseek:    { name: 'DeepSeek',   keyUrl: 'https://platform.deepseek.com/api_keys',    envVar: 'DEEPSEEK_API_KEY',    endpoint: 'https://api.deepseek.com/user/balance',      parseBalance: j => j.balance_infos ? j : { balance_infos: [] } },
+  stepfun:     { name: '阶跃星辰',    keyUrl: 'https://platform.stepfun.com/interfacekey',  envVar: 'STEPFUN_API_KEY',     endpoint: 'https://api.stepfun.com/v1/accounts',         parseBalance: j => ({ balance_infos: [{ total_balance: _num(j.balance), currency: 'CNY' }] }) },
+  siliconflow: { name: '硅基流动',    keyUrl: 'https://cloud.siliconflow.cn/account/ak',    envVar: 'SILICONFLOW_API_KEY', endpoint: 'https://api.siliconflow.cn/v1/user/info',     parseBalance: j => ({ balance_infos: [{ total_balance: _num(j.data && j.data.totalBalance), currency: 'CNY' }] }) },
+  openrouter:  { name: 'OpenRouter', keyUrl: 'https://openrouter.ai/keys',                 envVar: 'OPENROUTER_API_KEY',  endpoint: 'https://openrouter.ai/api/v1/credits',        parseBalance: j => { const d = j.data || {}; return { balance_infos: [{ total_balance: _num(d.total_credits) - _num(d.total_usage), currency: 'USD' }] } } },
+  novita:      { name: 'Novita AI',  keyUrl: 'https://novita.ai/getKey',                   envVar: 'NOVITA_API_KEY',      endpoint: 'https://api.novita.ai/v3/user/balance',       parseBalance: j => ({ balance_infos: [{ total_balance: _num(j.availableBalance) / 10000, currency: 'USD' }] }) },
+}
+
+// Kimi: limits[].detail.{limit,remaining,resetTime}->5h; usage.{...}->weekly
+function _parseKimi(j) {
+  const quotas = []
+  if (Array.isArray(j.limits)) {
+    for (const it of j.limits) {
+      const d = it.detail || {}
+      const limit = _num(d.limit) || 1
+      const used = Math.max(0, limit - _num(d.remaining))
+      quotas.push({ level: 'five_hour', percent: limit > 0 ? (used / limit) * 100 : 0, resetTimestamp: _toResetSecs(d.resetTime) })
+    }
+  }
+  if (j.usage) {
+    const limit = _num(j.usage.limit) || 1
+    const used = Math.max(0, limit - _num(j.usage.remaining))
+    quotas.push({ level: 'weekly', percent: limit > 0 ? (used / limit) * 100 : 0, resetTimestamp: _toResetSecs(j.usage.resetTime) })
+  }
+  return { quotas }
+}
+
+// 智谱: data.limits[] 中 type=TOKENS_LIMIT, unit:3->5h, unit:6->weekly, percentage 即已用%
+function _parseZhipu(j) {
+  const data = j.data || {}
+  const limits = Array.isArray(data.limits) ? data.limits : []
+  let five = null, weekly = null
+  const unclassified = []
+  for (const it of limits) {
+    if ((it.type || '').toLowerCase() !== 'tokens_limit') continue
+    const entry = { percent: _num(it.percentage), resetTimestamp: _toResetSecs(it.nextResetTime) }
+    if (it.unit === 3 && !five) five = { ...entry, level: 'five_hour' }
+    else if (it.unit === 6 && !weekly) weekly = { ...entry, level: 'weekly' }
+    else unclassified.push(entry)
+  }
+  // 兜底: unit 缺失时无 reset 的优先归 5h
+  unclassified.sort((a, b) => (a.resetTimestamp == null ? 0 : 1) - (b.resetTimestamp == null ? 0 : 1))
+  for (const e of unclassified) {
+    if (!five) five = { ...e, level: 'five_hour' }
+    else if (!weekly) weekly = { ...e, level: 'weekly' }
+  }
+  const quotas = []
+  if (five) quotas.push(five)
+  if (weekly) quotas.push(weekly)
+  return { quotas }
+}
+
+// MiniMax: model_remains[general].current_interval_remaining_percent->5h(100-x); current_weekly_status==1 时周桶
+function _parseMiniMax(j) {
+  const quotas = []
+  const remains = Array.isArray(j.model_remains) ? j.model_remains : []
+  const item = remains.find(m => m.model_name === 'general')
+  if (item) {
+    if (item.current_interval_remaining_percent != null) {
+      quotas.push({ level: 'five_hour', percent: 100 - _num(item.current_interval_remaining_percent), resetTimestamp: _toResetSecs(item.end_time) })
+    }
+    if (item.current_weekly_status === 1 && item.current_weekly_remaining_percent != null) {
+      quotas.push({ level: 'weekly', percent: 100 - _num(item.current_weekly_remaining_percent), resetTimestamp: _toResetSecs(item.weekly_end_time) })
+    }
+  }
+  return { quotas }
+}
+
+// ZenMux: data.quota_5_hour.usage_percentage*100->5h; quota_7_day.usage_percentage*100->weekly
+function _parseZenMux(j) {
+  const data = j.data || {}
+  const quotas = []
+  if (data.quota_5_hour) quotas.push({ level: 'five_hour', percent: _num(data.quota_5_hour.usage_percentage) * 100, resetTimestamp: _toResetSecs(data.quota_5_hour.resets_at) })
+  if (data.quota_7_day) quotas.push({ level: 'weekly', percent: _num(data.quota_7_day.usage_percentage) * 100, resetTimestamp: _toResetSecs(data.quota_7_day.resets_at) })
+  return { quotas }
+}
+
+const CODING_PLAN_PROVIDERS = {
+  kimi:    { name: 'Kimi For Coding', keyUrl: 'https://platform.moonshot.cn/console/api-keys',                              envVar: 'KIMI_API_KEY',    endpoint: 'https://api.kimi.com/coding/v1/usages',                              parseQuota: _parseKimi },
+  zhipu:   { name: '智谱 GLM',         keyUrl: 'https://open.bigmodel.cn/usercenter/apikeys',                                envVar: 'ZHIPU_API_KEY',   endpoint: 'https://open.bigmodel.cn/api/monitor/usage/quota/limit', authMode: 'raw', parseQuota: _parseZhipu },
+  minimax: { name: 'MiniMax',          keyUrl: 'https://platform.minimaxi.com/user-center/basic-information/interface-key', envVar: 'MINIMAX_API_KEY', endpoint: 'https://api.minimaxi.com/v1/api/openplatform/coding_plan/remains', parseQuota: _parseMiniMax },
+  zenmux:  { name: 'ZenMux',           keyUrl: 'https://zenmux.ai',                                                          envVar: 'ZENMUX_API_KEY',  needsBaseUrl: true,                                            parseQuota: _parseZenMux },
+}
+
+function isCodingPlanProvider(id) {
+  return id === 'volcengine' || Object.prototype.hasOwnProperty.call(CODING_PLAN_PROVIDERS, id)
+}
+
+function providerMeta(id) {
+  if (BALANCE_PROVIDERS[id]) return { ...BALANCE_PROVIDERS[id], kind: 'balance' }
+  if (CODING_PLAN_PROVIDERS[id]) return { ...CODING_PLAN_PROVIDERS[id], kind: 'codingplan' }
+  if (id === 'volcengine') return { name: '火山 Ark', kind: 'codingplan', needsAksk: true }
+  return null
+}
+
+// ---------- Provider 配置存取（兼容旧 keys.deepseek / keys.volcengine）----------
+
+function getProviderConfig(id) {
+  const keys = readApiKeys()
+  if (keys.providers && keys.providers[id]) return { ...keys.providers[id] }
+  if (id === 'deepseek' && typeof keys.deepseek === 'string') return { apiKey: keys.deepseek }
+  if (id === 'volcengine' && keys.volcengine) return { ...keys.volcengine }
+  return {}
+}
+
+function getProviderApiKey(id) {
+  const meta = BALANCE_PROVIDERS[id] || CODING_PLAN_PROVIDERS[id]
+  if (meta && meta.envVar && process.env[meta.envVar]) return process.env[meta.envVar]
+  const cfg = getProviderConfig(id)
+  return cfg.apiKey || ''
+}
+
+function setProviderConfig(id, cfg) {
+  const keys = readApiKeys()
+  if (!keys.providers) keys.providers = {}
+  if (cfg && Object.keys(cfg).length) keys.providers[id] = cfg
+  else delete keys.providers[id]
+  // 互斥: 有有效凭证则选中此 provider
+  const hasCred = cfg && (cfg.apiKey || (cfg.accessKeyId && cfg.secretAccessKey) || cfg.baseUrl)
+  if (hasCred) keys.selected_provider = id
+  else if (keys.selected_provider === id) keys.selected_provider = null
+  writeApiKeys(keys)
+}
+
+// ---------- 通用 HTTP GET (JSON) ----------
+
+function _httpGetJSON(url, headers, cb) {
+  let u
+  try { u = new URL(url) } catch (e) { cb({ _error: 'URL 无效: ' + e.message }); return }
+  const options = { hostname: u.hostname, path: u.pathname + u.search, method: 'GET', headers: headers || {}, timeout: 15000 }
+  const req = https.request(options, (res) => {
+    let data = ''
+    res.on('data', c => { data += c })
+    res.on('end', () => {
+      if (res.statusCode === 401 || res.statusCode === 403) { cb({ _error: `鉴权失败 (HTTP ${res.statusCode})` }); return }
+      if (res.statusCode < 200 || res.statusCode >= 300) { cb({ _error: `API 错误 (HTTP ${res.statusCode}): ${data.slice(0, 200)}` }); return }
+      try { cb({ json: JSON.parse(data) }) } catch { cb({ _error: '解析响应失败' }) }
+    })
+  })
+  req.on('error', e => cb({ _error: e.message }))
+  req.on('timeout', () => { req.destroy(); cb({ _error: '请求超时' }) })
+  req.end()
+}
+
+function fetchBalanceProvider(id) {
+  const meta = BALANCE_PROVIDERS[id]
+  if (!meta) { lastBalance = { error: '未知供应商: ' + id }; transmitBalance(); return }
+  const apiKey = getProviderApiKey(id)
+  if (!apiKey) { lastBalance = { error: '未配置 API Key' }; transmitBalance(); return }
+  _httpGetJSON(meta.endpoint, { 'Authorization': `Bearer ${apiKey}`, 'Accept': 'application/json' }, (r) => {
+    if (r._error) { lastBalance = { error: r._error }; transmitBalance(); return }
+    try {
+      const parsed = meta.parseBalance(r.json)
+      if (!parsed || !parsed.balance_infos) { lastBalance = { error: '未知响应格式' }; transmitBalance(); return }
+      lastBalance = parsed
+      transmitBalance()
+    } catch (e) { lastBalance = { error: '解析失败: ' + e.message }; transmitBalance() }
+  })
+}
+
+function fetchCodingPlanProvider(id) {
+  const meta = CODING_PLAN_PROVIDERS[id]
+  if (!meta) { lastBalance = { provider: 'codingplan', error: '未知供应商: ' + id }; transmitBalance(); return }
+  const apiKey = getProviderApiKey(id)
+  if (!apiKey) { lastBalance = { provider: 'codingplan', error: '未配置 API Key' }; transmitBalance(); return }
+  const cfg = getProviderConfig(id)
+  const url = meta.needsBaseUrl ? cfg.baseUrl : meta.endpoint
+  if (!url) { lastBalance = { provider: 'codingplan', error: '未配置 Base URL' }; transmitBalance(); return }
+  const headers = { 'Accept': 'application/json' }
+  headers['Authorization'] = meta.authMode === 'raw' ? apiKey : `Bearer ${apiKey}`
+  if (meta.authMode === 'raw') headers['Content-Type'] = 'application/json'
+  _httpGetJSON(url, headers, (r) => {
+    if (r._error) { lastBalance = { provider: 'codingplan', error: r._error }; transmitBalance(); return }
+    const j = r.json
+    // 业务级错误检查
+    if (id === 'zhipu' && j.success === false) { lastBalance = { provider: 'codingplan', error: 'API 错误: ' + (j.msg || '未知') }; transmitBalance(); return }
+    if (id === 'minimax' && j.base_resp && j.base_resp.status_code !== 0) { lastBalance = { provider: 'codingplan', error: `API 错误 (code ${j.base_resp.status_code}): ${j.base_resp.status_msg || ''}` }; transmitBalance(); return }
+    if (id === 'zenmux' && j.success !== true) { lastBalance = { provider: 'codingplan', error: 'API 错误: ' + (j.message || '未知') }; transmitBalance(); return }
+    try {
+      const result = meta.parseQuota(j)
+      const quotas = (result.quotas || []).filter(q => q.percent != null)
+      if (!quotas.length) { lastBalance = { provider: 'codingplan', error: '暂无用量数据' }; transmitBalance(); return }
+      lastBalance = { provider: 'codingplan', quotas }
+      transmitBalance()
+    } catch (e) { lastBalance = { provider: 'codingplan', error: '解析失败: ' + e.message }; transmitBalance() }
+  })
+}
 
 function transmitBalance() {
   const data = lastBalance ? { ...lastBalance } : lastBalance
   if (data && typeof data === 'object') {
     const keys = readApiKeys()
-    if (keys._budgets?.deepseek) data._budget = keys._budgets.deepseek
-    data._provider = keys.selected_provider || (keys.volcengine?.accessKeyId ? 'volcengine' : 'deepseek')
+    const sel = keys.selected_provider
+    if (sel && BALANCE_PROVIDERS[sel] && keys._budgets && keys._budgets[sel]) data._budget = keys._budgets[sel]
+    const fallback = keys.volcengine && keys.volcengine.accessKeyId ? 'volcengine' : 'deepseek'
+    data._provider = sel || fallback
+    const meta = providerMeta(data._provider)
+    if (meta) data._providerName = meta.name
+    if (isCodingPlanProvider(data._provider)) data._isQuota = true
   }
   if (mainWin) mainWin.webContents.send('balance-update', data)
   if (settingsWin) settingsWin.webContents.send('balance-update', data)
 }
 
-function fetchDeepSeekBalance() {
-  const apiKey = getApiKey('deepseek')
-  if (!apiKey) {
-    lastBalance = { error: '未配置 API Key' }
-    if (mainWin) mainWin.webContents.send('balance-update', lastBalance)
-    if (settingsWin) settingsWin.webContents.send('balance-update', lastBalance)
-    return
-  }
-
-  const options = {
-    hostname: 'api.deepseek.com',
-    path: '/user/balance',
-    method: 'GET',
-    headers: {
-      'Accept': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
-    },
-    timeout: 10000,
-  }
-
-  const req = https.request(options, (res) => {
-    let data = ''
-    res.on('data', (chunk) => { data += chunk })
-    res.on('end', () => {
-      try {
-        const json = JSON.parse(data)
-        if (json.balance_infos) {
-          lastBalance = json
-        } else if (json.error) {
-          lastBalance = { error: json.error.message || json.error }
-        } else {
-          lastBalance = { error: '未知响应格式' }
-        }
-      } catch {
-        lastBalance = { error: '解析响应失败' }
-      }
-      transmitBalance()
-    })
-  })
-
-  req.on('error', (e) => {
-    lastBalance = { error: e.message }
-    if (mainWin) mainWin.webContents.send('balance-update', lastBalance)
-    if (settingsWin) settingsWin.webContents.send('balance-update', lastBalance)
-  })
-
-  req.on('timeout', () => {
-    req.destroy()
-    lastBalance = { error: '请求超时' }
-    if (mainWin) mainWin.webContents.send('balance-update', lastBalance)
-    if (settingsWin) settingsWin.webContents.send('balance-update', lastBalance)
-  })
-
-  req.end()
-}
+// DeepSeek 余额查询已并入通用 fetchBalanceProvider('deepseek')
 
 // ---------- Volcengine Ark Coding Plan Usage ----------
 
@@ -298,7 +441,7 @@ function fetchVolcArkUsage() {
             status: json.Result.Status || '',
             updateTimestamp: json.Result.UpdateTimestamp || 0,
             quotas: json.Result.QuotaUsage.map((q) => ({
-              level: q.Level,
+              level: q.Level === 'session' ? 'five_hour' : q.Level,
               percent: q.Percent,
               resetTimestamp: q.ResetTimestamp,
             })),
@@ -331,7 +474,8 @@ function fetchVolcArkUsage() {
 function refreshSelectedBalance() {
   const p = syncProviderFromClaudeConfig()
   if (p === 'volcengine') fetchVolcArkUsage()
-  else if (p === 'deepseek') fetchDeepSeekBalance()
+  else if (CODING_PLAN_PROVIDERS[p]) fetchCodingPlanProvider(p)
+  else if (BALANCE_PROVIDERS[p]) fetchBalanceProvider(p)
   else {
     lastBalance = { error: '未配置任何 provider' }
     transmitBalance()
@@ -850,6 +994,11 @@ function openSettingsWindow() {
   })
 
   settingsWin.loadFile(path.join(__dirname, 'settings.html'))
+  // 外部链接（获取 API Key 等）用系统浏览器打开，而非在应用内新开窗口
+  settingsWin.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//i.test(url)) shell.openExternal(url)
+    return { action: 'deny' }
+  })
   settingsWin.on('closed', () => { settingsWin = null })
 }
 
@@ -1069,6 +1218,23 @@ function createWindow() {
       console.error('[balance] budget save failed:', e)
       return false
     }
+  })
+
+  // ---------- 多供应商余额查询（参考 cc-switch）----------
+  ipcMain.handle('provider-list', () => {
+    const balance = Object.entries(BALANCE_PROVIDERS).map(([id, p]) => ({ id, name: p.name, keyUrl: p.keyUrl, kind: 'balance' }))
+    const codingPlan = [
+      { id: 'volcengine', name: '火山 Ark', keyUrl: 'https://console.volcengine.com/iam/keymanage', kind: 'codingplan', needsAksk: true },
+      ...Object.entries(CODING_PLAN_PROVIDERS).map(([id, p]) => ({ id, name: p.name, keyUrl: p.keyUrl, kind: 'codingplan', needsBaseUrl: !!p.needsBaseUrl })),
+    ]
+    return { balance, codingPlan }
+  })
+
+  ipcMain.handle('get-provider-config', (_, id) => getProviderConfig(id))
+
+  ipcMain.on('set-provider-config', (_, id, cfg) => {
+    setProviderConfig(id, cfg || null)
+    refreshSelectedBalance()
   })
 
   // Fetch balance on startup and every hour

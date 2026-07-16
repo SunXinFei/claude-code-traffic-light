@@ -170,9 +170,8 @@ export default function App() {
   const formatBalanceShort = () => {
     if (!balance) return null;
     if (balance.error) return null;
-    const provider = balance._provider || balance.provider;
-    if (provider === 'volcengine') {
-      const sess = balance.quotas?.find((q: any) => q.level === 'session');
+    if (balance._isQuota) {
+      const sess = balance.quotas?.find((q: any) => q.level === 'five_hour' || q.level === 'session');
       if (!sess) return null;
       return `${Math.round(sess.percent)}%`;
     }
@@ -185,28 +184,30 @@ export default function App() {
     return `${symbol}${total.toFixed(2)}`;
   };
 
-  const volcQuotaStr = () => {
-    if (!balance || balance.error) return null;
-    const provider = balance._provider || balance.provider;
-    if (provider !== 'volcengine') return null;
+  const quotaStr = () => {
+    if (!balance || balance.error || !balance._isQuota) return null;
     const q = balance.quotas || [];
     const get = (lvl: string) => {
       const it = q.find((x: any) => x.level === lvl);
-      return it ? `${Math.round(it.percent)}%` : '—';
+      return it ? `${Math.round(it.percent)}%` : '-';
     };
-    return `${get('session')} / ${get('weekly')} / ${get('monthly')}`;
+    return `${get('five_hour')} / ${get('weekly')} / ${get('monthly')}`;
   };
 
   const [budget, setBudgetState] = useState<number | null>(null);
   useEffect(() => {
-    window.electronAPI.getBudget('deepseek').then((b: number | null) => setBudgetState(b));
+    window.electronAPI.getSelectedProvider().then((p) => {
+      if (p) window.electronAPI.getBudget(p).then((b: number | null) => setBudgetState(b));
+    });
   }, []);
 
   const ringPercent = (() => {
     if (!balance || balance.error) return 0;
-    const provider = balance._provider || balance.provider;
-    if (provider === 'volcengine') {
-      const mo = balance.quotas?.find((q: any) => q.level === 'monthly');
+    if (balance._isQuota) {
+      const mo = balance.quotas?.find((q: any) => q.level === 'monthly')
+        || balance.quotas?.find((q: any) => q.level === 'weekly')
+        || balance.quotas?.find((q: any) => q.level === 'five_hour')
+        || balance.quotas?.find((q: any) => q.level === 'session');
       if (!mo) return 0;
       return Math.max(0, Math.min(1, 1 - (mo.percent || 0) / 100));
     }
@@ -460,17 +461,16 @@ export default function App() {
           }}
           onClick={() => window.electronAPI.openSettings()}
           title={(() => {
-            const provider = balance?._provider || balance?.provider;
-            if (provider === 'volcengine') {
-              return `Ark 用量 ${volcQuotaStr()} (sess/wk/mo) | 剩余 ${Math.round(ringPercent * 100)}%`;
+            const name = balance?._providerName || (balance?._isQuota ? 'Ark' : 'DS');
+            if (balance?._isQuota) {
+              return `${name} 用量 ${quotaStr()} (5h/周/月) | 剩余 ${Math.round(ringPercent * 100)}%`;
             }
-            return `余额 ${formatBalanceShort()} / 预算 ¥${budget || '—'} | ${Math.round(ringPercent * 100)}%`;
+            return `${name} 余额 ${formatBalanceShort()}${budget ? ` / 预算 ¥${budget}` : ''} | ${Math.round(ringPercent * 100)}%`;
           })()}
         >
           <div>{(() => {
-            const provider = balance?._provider || balance?.provider;
-            if (provider === 'volcengine') return `Ark ${volcQuotaStr()}`;
-            return `DS ${formatBalanceShort()}${budget ? ` / ¥${budget}` : ''}`;
+            if (balance?._isQuota) return `${quotaStr()}`;
+            return `${formatBalanceShort()}${budget ? ` / ¥${budget}` : ''}`;
           })()}</div>
           <div style={{ fontSize: 7, color: `${ringColor}cc`, marginTop: 1 }}>
             {Math.round(ringPercent * 100)}%

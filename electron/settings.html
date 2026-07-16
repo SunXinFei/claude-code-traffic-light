@@ -123,6 +123,32 @@
     }
     .eye-btn:hover { color: rgba(255,255,255,0.7); }
     .hidden { display: none; }
+    .link {
+      font-size: 11px; color: #0A84FF; text-decoration: none;
+      cursor: pointer; white-space: nowrap;
+    }
+    .link:hover { text-decoration: underline; }
+    .result-panel {
+      background: rgba(0,0,0,0.3); border-radius: 10px; padding: 12px; margin-top: 12px;
+    }
+    .result-panel:empty { background: none; padding: 0; margin: 0; }
+    .subsection {
+      background: rgba(0,0,0,0.18); border-radius: 10px; padding: 12px; margin-bottom: 12px;
+    }
+    .subsection:last-child { margin-bottom: 0; }
+    .subsection-header {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 12px;
+    }
+    .subsection-title {
+      font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 6px;
+    }
+    .provider-select {
+      padding: 6px 8px; border-radius: 8px; font-size: 12px;
+      border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.06);
+      color: #e5e5e7; max-width: 150px; outline: none; cursor: pointer;
+    }
+    .provider-select:focus { border-color: #30D158; }
 
     /* ---------- Claude 模型供应商 ---------- */
     body { overflow-y: auto; }
@@ -214,194 +240,224 @@
     <div id="cc-edit" class="cc-edit-panel hidden"></div>
   </div>
 
-  <div class="section" id="ds-section">
+  <div class="section" id="balance-section">
     <div class="section-header">
-      <div class="section-title">
-        DeepSeek
-        <span class="badge badge-off" id="ds-badge">未启用</span>
+      <div class="section-title">💰 大模型余额查询设置</div>
+    </div>
+    <div class="hint" style="margin-bottom:10px;">两类各选一个供应商，填入凭证并保存即启用；两类互斥，红绿灯展示当前启用方的余额 / 用量。</div>
+
+    <!-- 按量付费余额（金额类） -->
+    <div class="subsection" id="ds-section">
+      <div class="subsection-header">
+        <div class="subsection-title">
+          按量付费余额
+          <span class="badge badge-off" id="ds-badge">未启用</span>
+        </div>
+        <select id="ds-provider-select" class="provider-select" onchange="onBalanceProviderChange(this.value)"></select>
       </div>
-      <div class="toggle" id="ds-toggle" onclick="toggleDeepSeek()">
-        <div class="toggle-knob"></div>
+
+      <div id="ds-config">
+        <div class="field">
+          <div class="field-label" style="display:flex;align-items:center;justify-content:space-between;">
+            <span>API Key</span>
+            <a class="link" id="ds-keylink" href="#" target="_blank" rel="noopener">获取 API Key ↗</a>
+          </div>
+          <div class="field-row">
+            <input type="password" id="ds-key" placeholder="sk-...">
+            <button class="eye-btn" onclick="toggleEye('ds-key', this)" title="显示/隐藏">&#128065;</button>
+          </div>
+        </div>
+
+        <div class="field">
+          <div class="field-label">总金额（手动设定，用于光环比例计算）</div>
+          <div class="field-row">
+            <input type="text" id="ds-budget" placeholder="例如 20.00" oninput="updateBudgetStatus()">
+          </div>
+          <div class="hint">光环进度 = 当前余额 / 此处设定的总金额</div>
+        </div>
+
+        <div id="ds-budget-status" style="font-size:11px;color:rgba(255,255,255,0.5);margin-bottom:4px;"></div>
+
+        <div class="actions">
+          <button class="btn btn-primary btn-sm" onclick="saveBalanceProvider()">保存</button>
+          <button class="btn btn-secondary btn-sm" onclick="refreshBalance()">刷新余额</button>
+        </div>
+
+        <div id="ds-balance" class="result-panel"></div>
       </div>
     </div>
 
-    <div id="ds-config" class="hidden">
-      <div class="field">
-        <div class="field-label">API Key</div>
-        <div class="field-row">
-          <input type="password" id="ds-key" placeholder="sk-...">
-          <button class="eye-btn" onclick="toggleEye('ds-key', this)" title="显示/隐藏">&#128065;</button>
+    <!-- Coding Plan 用量（百分比类） -->
+    <div class="subsection" id="volc-section">
+      <div class="subsection-header">
+        <div class="subsection-title">
+          Coding Plan 用量
+          <span class="badge badge-off" id="volc-badge">未启用</span>
         </div>
-        <div class="hint">支持环境变量 DEEPSEEK_API_KEY，优先级高于此处配置</div>
+        <select id="cp-provider-select" class="provider-select" onchange="onCodingPlanProviderChange(this.value)"></select>
       </div>
 
-      <div class="field">
-        <div class="field-label">总金额（手动设定，用于光环比例计算）</div>
-        <div class="field-row">
-          <input type="text" id="ds-budget" placeholder="例如 20.00" oninput="updateBudgetStatus()">
+      <div id="volc-config">
+        <div id="cp-creds"></div>
+
+        <div class="actions">
+          <button class="btn btn-primary btn-sm" onclick="saveCodingPlanProvider()">保存</button>
+          <button class="btn btn-secondary btn-sm" onclick="refreshBalance()">刷新用量</button>
         </div>
-        <div class="hint">光环进度 = 当前余额 / 此处设定的总金额</div>
+
+        <div id="volc-balance" class="result-panel"></div>
       </div>
-
-      <div id="ds-budget-status" style="font-size:11px;color:rgba(255,255,255,0.5);margin-bottom:4px;"></div>
-
-      <div class="actions">
-        <button class="btn btn-primary btn-sm" onclick="saveAll()">保存</button>
-        <button class="btn btn-secondary btn-sm" onclick="refreshBalance()">刷新余额</button>
-      </div>
-
-      <div id="ds-balance" style="margin-top: 12px;"></div>
-    </div>
-  </div>
-
-  <div class="section" id="volc-section">
-    <div class="section-header">
-      <div class="section-title">
-        火山 Ark · Claude Code Coding Plan
-        <span class="badge badge-off" id="volc-badge">未启用</span>
-      </div>
-      <div class="toggle" id="volc-toggle" onclick="toggleVolc()">
-        <div class="toggle-knob"></div>
-      </div>
-    </div>
-
-    <div id="volc-config" class="hidden">
-      <div class="field">
-        <div class="field-label">Access Key ID</div>
-        <div class="field-row">
-          <input type="text" id="volc-ak" placeholder="AKLT...">
-          <button class="eye-btn" onclick="toggleEye('volc-ak', this)" title="显示/隐藏">&#128065;</button>
-        </div>
-      </div>
-
-      <div class="field">
-        <div class="field-label">Secret Access Key</div>
-        <div class="field-row">
-          <input type="password" id="volc-sk" placeholder="Base64 编码的 SK">
-          <button class="eye-btn" onclick="toggleEye('volc-sk', this)" title="显示/隐藏">&#128065;</button>
-        </div>
-        <div class="hint">支持环境变量 VOLC_AK / VOLC_SK，优先级高于此处配置</div>
-      </div>
-
-      <div class="actions">
-        <button class="btn btn-primary btn-sm" onclick="saveVolc()">保存</button>
-        <button class="btn btn-secondary btn-sm" onclick="refreshBalance()">刷新用量</button>
-      </div>
-
-      <div id="volc-balance" style="margin-top: 12px;"></div>
     </div>
   </div>
 
   <script>
-    let dsEnabled = false
-    let volcEnabled = false
+    // ---------- 多供应商余额查询（参考 cc-switch）----------
+    let PROVIDERS = { balance: [], codingPlan: [] }
+    let curBalanceId = null
+    let curCodingPlanId = null
     let balance = null
 
+    function esc(s) {
+      return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
+    }
+
+    function toast(msg) { if (typeof ccToast === 'function') ccToast(msg) }
+
     async function init() {
-      const key = await window.electronAPI.getApiKey('deepseek')
-      if (key) {
-        document.getElementById('ds-key').value = key
-      }
-      const budget = await window.electronAPI.getBudget('deepseek')
-      if (budget) {
-        document.getElementById('ds-budget').value = budget
-      }
+      try { PROVIDERS = await window.electronAPI.providerList() } catch (e) { PROVIDERS = { balance: [], codingPlan: [] } }
+      const dsSel = document.getElementById('ds-provider-select')
+      dsSel.innerHTML = PROVIDERS.balance.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('')
+      const cpSel = document.getElementById('cp-provider-select')
+      cpSel.innerHTML = PROVIDERS.codingPlan.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('')
 
-      const cred = await window.electronAPI.getVolcCredentials()
-      if (cred && cred.accessKeyId) {
-        document.getElementById('volc-ak').value = cred.accessKeyId
-      }
-      if (cred && cred.secretAccessKey) {
-        document.getElementById('volc-sk').value = cred.secretAccessKey
-      }
-
-      // 开关状态由 selected_provider 决定, 而非 key 是否存在
       const selected = await window.electronAPI.getSelectedProvider()
-      dsEnabled = (selected === 'deepseek')
-      volcEnabled = (selected === 'volcengine')
+      curBalanceId = (PROVIDERS.balance.find(p => p.id === selected) && selected) || (PROVIDERS.balance[0] && PROVIDERS.balance[0].id) || null
+      curCodingPlanId = (PROVIDERS.codingPlan.find(p => p.id === selected) && selected) || (PROVIDERS.codingPlan[0] && PROVIDERS.codingPlan[0].id) || null
+      if (curBalanceId) dsSel.value = curBalanceId
+      if (curCodingPlanId) cpSel.value = curCodingPlanId
 
-      updateToggleUI()
-      updateVolcToggleUI()
+      await loadBalanceProviderUI(curBalanceId)
+      await loadCodingPlanProviderUI(curCodingPlanId)
+      updateBadges(selected)
       loadBalance()
     }
 
-    function saveAll() {
-      // Save API Key
-      const key = document.getElementById('ds-key').value.trim()
-      window.electronAPI.setApiKey('deepseek', key)
-      // Save Budget
+    async function loadBalanceProviderUI(id) {
+      if (!id) return
+      curBalanceId = id
+      const meta = PROVIDERS.balance.find(p => p.id === id)
+      if (!meta) return
+      document.getElementById('ds-keylink').href = meta.keyUrl
+      const cfg = await window.electronAPI.getProviderConfig(id)
+      document.getElementById('ds-key').value = cfg.apiKey || ''
+      const budget = await window.electronAPI.getBudget(id)
+      document.getElementById('ds-budget').value = budget || ''
+      updateBudgetStatus()
+    }
+
+    function onBalanceProviderChange(id) { loadBalanceProviderUI(id) }
+
+    async function loadCodingPlanProviderUI(id) {
+      if (!id) return
+      curCodingPlanId = id
+      const meta = PROVIDERS.codingPlan.find(p => p.id === id)
+      if (!meta) return
+      const cfg = await window.electronAPI.getProviderConfig(id)
+      const el = document.getElementById('cp-creds')
+      let html = ''
+      if (meta.needsAksk) {
+        html += `
+          <div class="field">
+            <div class="field-label" style="display:flex;align-items:center;justify-content:space-between;">
+              <span>Access Key ID</span>
+              <a class="link" href="${esc(meta.keyUrl)}" target="_blank" rel="noopener">获取 AccessKey ↗</a>
+            </div>
+            <div class="field-row">
+              <input type="text" id="cp-ak" value="${esc(cfg.accessKeyId)}" placeholder="AKLT...">
+              <button class="eye-btn" onclick="toggleEye('cp-ak', this)" title="显示/隐藏">&#128065;</button>
+            </div>
+          </div>
+          <div class="field">
+            <div class="field-label">Secret Access Key</div>
+            <div class="field-row">
+              <input type="password" id="cp-sk" value="${esc(cfg.secretAccessKey)}" placeholder="Base64 编码的 SK">
+              <button class="eye-btn" onclick="toggleEye('cp-sk', this)" title="显示/隐藏">&#128065;</button>
+            </div>
+            <div class="hint">支持环境变量 VOLC_AK / VOLC_SK，优先级高于此处配置</div>
+          </div>
+        `
+      } else {
+        if (meta.needsBaseUrl) {
+          html += `
+            <div class="field">
+              <div class="field-label">Base URL</div>
+              <div class="field-row">
+                <input type="text" id="cp-baseurl" value="${esc(cfg.baseUrl)}" placeholder="https://your-zenmux-endpoint">
+              </div>
+            </div>
+          `
+        }
+        html += `
+          <div class="field">
+            <div class="field-label" style="display:flex;align-items:center;justify-content:space-between;">
+              <span>API Key</span>
+              <a class="link" href="${esc(meta.keyUrl)}" target="_blank" rel="noopener">获取 API Key ↗</a>
+            </div>
+            <div class="field-row">
+              <input type="password" id="cp-key" value="${esc(cfg.apiKey)}" placeholder="sk-...">
+              <button class="eye-btn" onclick="toggleEye('cp-key', this)" title="显示/隐藏">&#128065;</button>
+            </div>
+          </div>
+        `
+      }
+      el.innerHTML = html
+    }
+
+    function onCodingPlanProviderChange(id) { loadCodingPlanProviderUI(id) }
+
+    async function saveBalanceProvider() {
+      const id = curBalanceId
+      if (!id) return
+      const apiKey = document.getElementById('ds-key').value.trim()
+      window.electronAPI.setProviderConfig(id, { apiKey })
       const amount = parseFloat(document.getElementById('ds-budget').value)
-      if (!isNaN(amount) && amount > 0) {
-        window.electronAPI.setBudget('deepseek', amount)
-      }
-      // Feedback
-      const btn = document.querySelector('button[onclick="saveAll()"]')
-      if (btn) {
-        const orig = btn.textContent
-        btn.textContent = '已保存'
-        btn.style.background = '#30D158'
-        setTimeout(() => { btn.textContent = orig; btn.style.background = '' }, 1500)
-      }
-      dsEnabled = !!key
-      updateToggleUI()
+      if (!isNaN(amount) && amount > 0) window.electronAPI.setBudget(id, amount)
+      toast('已保存')
+      updateBadges(id)
       refreshBalance()
     }
 
-    function toggleDeepSeek() {
-      dsEnabled = !dsEnabled
-      if (dsEnabled) {
-        volcEnabled = false
-        window.electronAPI.selectProvider('deepseek')
+    async function saveCodingPlanProvider() {
+      const id = curCodingPlanId
+      if (!id) return
+      const meta = PROVIDERS.codingPlan.find(p => p.id === id)
+      const cfg = {}
+      if (meta.needsAksk) {
+        cfg.accessKeyId = document.getElementById('cp-ak').value.trim()
+        cfg.secretAccessKey = document.getElementById('cp-sk').value.trim()
       } else {
-        window.electronAPI.selectProvider(null)
+        const keyEl = document.getElementById('cp-key')
+        if (keyEl) cfg.apiKey = keyEl.value.trim()
+        if (meta.needsBaseUrl) {
+          const urlEl = document.getElementById('cp-baseurl')
+          if (urlEl) cfg.baseUrl = urlEl.value.trim()
+        }
       }
-      updateToggleUI()
-      updateVolcToggleUI()
-    }
-
-    function toggleVolc() {
-      volcEnabled = !volcEnabled
-      if (volcEnabled) {
-        dsEnabled = false
-        window.electronAPI.selectProvider('volcengine')
-      } else {
-        window.electronAPI.selectProvider(null)
-      }
-      updateToggleUI()
-      updateVolcToggleUI()
-    }
-
-    function updateVolcToggleUI() {
-      const toggle = document.getElementById('volc-toggle')
-      const badge = document.getElementById('volc-badge')
-      const config = document.getElementById('volc-config')
-      if (volcEnabled) {
-        toggle.classList.add('on')
-        badge.className = 'badge badge-on'
-        badge.textContent = '已启用'
-        config.classList.remove('hidden')
-      } else {
-        toggle.classList.remove('on')
-        badge.className = 'badge badge-off'
-        badge.textContent = '未启用'
-        config.classList.add('hidden')
-      }
-    }
-
-    async function saveVolc() {
-      const ak = document.getElementById('volc-ak').value.trim()
-      const sk = document.getElementById('volc-sk').value.trim()
-      await window.electronAPI.setVolcCredentials(ak, sk)
-      volcEnabled = !!(ak && sk)
-      updateVolcToggleUI()
+      window.electronAPI.setProviderConfig(id, cfg)
+      toast('已保存')
+      updateBadges(id)
       refreshBalance()
-      const btn = document.querySelector('button[onclick="saveVolc()"]')
-      if (btn) {
-        const orig = btn.textContent
-        btn.textContent = '已保存'
-        btn.style.background = '#30D158'
-        setTimeout(() => { btn.textContent = orig; btn.style.background = '' }, 1500)
-      }
+    }
+
+    function updateBadges(selected) {
+      const dsBadge = document.getElementById('ds-badge')
+      const volcBadge = document.getElementById('volc-badge')
+      const isBalance = selected && PROVIDERS.balance.some(p => p.id === selected)
+      const isCodingPlan = selected && PROVIDERS.codingPlan.some(p => p.id === selected)
+      dsBadge.className = 'badge ' + (isBalance ? 'badge-on' : 'badge-off')
+      dsBadge.textContent = isBalance ? '已启用' : '未启用'
+      volcBadge.className = 'badge ' + (isCodingPlan ? 'badge-on' : 'badge-off')
+      volcBadge.textContent = isCodingPlan ? '已启用' : '未启用'
     }
 
     function formatRelativeReset(resetTs) {
@@ -416,41 +472,61 @@
       return `${mins}分后刷新`
     }
 
-    function formatUpdateTs(ts) {
-      if (!ts) return ''
-      const d = new Date(ts * 1000)
-      const pad = (n) => String(n).padStart(2, '0')
-      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+    function toggleEye(inputId, btn) {
+      const input = document.getElementById(inputId)
+      if (!input) return
+      if (input.type === 'password') { input.type = 'text'; btn.innerHTML = '&#128064;' }
+      else { input.type = 'password'; btn.innerHTML = '&#128065;' }
     }
 
-    const VOLC_LEVEL_LABEL = { session: 'Session', weekly: 'Weekly', monthly: 'Monthly' }
+    const CP_LABELS = { five_hour: '5 小时', weekly: '每周', monthly: '每月', session: '5 小时', weekly_limit: '每周' }
 
-    function renderVolcBalance(b) {
+    function renderAll(b) {
+      const isQuota = !!(b && (b._isQuota || b.quotas))
+      if (isQuota) {
+        renderCodingPlan(b)
+        document.getElementById('ds-balance').innerHTML = '<div class="hint" style="font-size:11px;color:rgba(255,255,255,0.3)">当前未启用按量付费余额查询</div>'
+      } else {
+        renderBalanceAmount(b)
+        document.getElementById('volc-balance').innerHTML = '<div class="hint" style="font-size:11px;color:rgba(255,255,255,0.3)">当前未启用 Coding Plan 用量查询</div>'
+      }
+    }
+
+    function renderBalanceAmount(b) {
+      const el = document.getElementById('ds-balance')
+      if (!b) { el.innerHTML = '<div class="hint">暂无余额数据</div>'; return }
+      if (b.error) { el.innerHTML = `<div class="error-msg">${esc(b.error)}</div>`; return }
+      if (!b.balance_infos || !b.balance_infos.length) { el.innerHTML = '<div class="hint">暂无余额数据</div>'; return }
+      let html = '<div class="balance-grid">'
+      for (const info of b.balance_infos) {
+        const total = parseFloat(info.total_balance) || 0
+        const granted = parseFloat(info.granted_balance) || 0
+        const toppedUp = parseFloat(info.topped_up_balance) || 0
+        const sym = info.currency === 'USD' ? '$' : '¥'
+        html += `
+          <div class="balance-card"><div class="label">总余额</div><div class="value green">${sym}${total.toFixed(2)}</div></div>
+          <div class="balance-card"><div class="label">充值额度</div><div class="value">${sym}${toppedUp.toFixed(2)}</div></div>
+          <div class="balance-card"><div class="label">赠送额度</div><div class="value orange">${sym}${granted.toFixed(2)}</div></div>
+          <div class="balance-card"><div class="label">币种</div><div class="value" style="font-size:13px">${esc(info.currency || 'CNY')}</div></div>
+        `
+      }
+      html += '</div>'
+      el.innerHTML = html
+    }
+
+    function renderCodingPlan(b) {
       const el = document.getElementById('volc-balance')
-      if (!el) return
-      if (!b) {
-        el.innerHTML = '<div style="font-size:11px;color:rgba(255,255,255,0.3)">暂无用量数据</div>'
-        return
-      }
-      if (b.error) {
-        el.innerHTML = `<div class="error-msg">${b.error}</div>`
-        return
-      }
-      if (!b.quotas || !b.quotas.length) {
-        el.innerHTML = '<div style="font-size:11px;color:rgba(255,255,255,0.3)">暂无用量数据</div>'
-        return
-      }
-      const updateStr = formatUpdateTs(b.updateTimestamp)
-      let html = `<div style="font-size:10px;color:rgba(255,255,255,0.4);margin-bottom:8px;">数据截止 ${updateStr} · 状态 ${b.status || '—'}</div>`
-      html += '<div class="balance-grid">'
+      if (!b) { el.innerHTML = '<div class="hint">暂无用量数据</div>'; return }
+      if (b.error) { el.innerHTML = `<div class="error-msg">${esc(b.error)}</div>`; return }
+      if (!b.quotas || !b.quotas.length) { el.innerHTML = '<div class="hint">暂无用量数据</div>'; return }
+      let html = '<div class="balance-grid">'
       for (const q of b.quotas) {
         const pct = (q.percent || 0).toFixed(2)
         const remain = Math.max(0, 100 - (q.percent || 0)).toFixed(1)
-        const colorCls = q.percent > 90 ? 'orange' : 'green'
-        const label = VOLC_LEVEL_LABEL[q.level] || q.level
+        const colorCls = (q.percent || 0) > 90 ? 'orange' : 'green'
         html += `
           <div class="balance-card">
-            <div class="label">${label} 已用</div>
+            <div class="label">${CP_LABELS[q.level] || q.level} 已用</div>
             <div class="value ${colorCls}">${pct}%</div>
             <div class="hint" style="margin-top:4px;">剩余 ${remain}% · ${formatRelativeReset(q.resetTimestamp)}</div>
           </div>
@@ -458,23 +534,6 @@
       }
       html += '</div>'
       el.innerHTML = html
-    }
-
-    function updateToggleUI() {
-      const toggle = document.getElementById('ds-toggle')
-      const badge = document.getElementById('ds-badge')
-      const config = document.getElementById('ds-config')
-      if (dsEnabled) {
-        toggle.classList.add('on')
-        badge.className = 'badge badge-on'
-        badge.textContent = '已启用'
-        config.classList.remove('hidden')
-      } else {
-        toggle.classList.remove('on')
-        badge.className = 'badge badge-off'
-        badge.textContent = '未启用'
-        config.classList.add('hidden')
-      }
     }
 
     function toggleEye(inputId, btn) {
@@ -488,23 +547,16 @@
       }
     }
 
-    async function saveKey(provider) {
-      const key = document.getElementById('ds-key').value.trim()
-      await window.electronAPI.setApiKey(provider, key)
-      dsEnabled = !!key
-      updateToggleUI()
-      refreshBalance()
-    }
-
     async function refreshBalance() {
-      const el = document.getElementById('ds-balance')
-      el.innerHTML = '<div style="font-size:11px;color:rgba(255,255,255,0.4)">查询中...</div>'
+      const isQuota = !!(balance && (balance._isQuota || balance.quotas))
+      const el = document.getElementById(isQuota ? 'volc-balance' : 'ds-balance')
+      if (el) el.innerHTML = '<div class="hint">查询中...</div>'
       window.electronAPI.refreshBalance()
     }
 
     async function loadBalance() {
       balance = await window.electronAPI.getBalance()
-      renderBalance()
+      renderAll(balance)
       updateBudgetStatus()
     }
 
@@ -522,63 +574,11 @@
       el.innerHTML = `余额 ${total.toFixed(2)} / 预算 ${budgetAmt.toFixed(2)} = <b>${pct}%</b>`
     }
 
-    function renderBalance() {
-      const provider = balance?._provider || balance?.provider
-      if (provider === 'volcengine') {
-        renderVolcBalance(balance)
-        document.getElementById('ds-balance').innerHTML = ''
-        return
-      }
-      const el = document.getElementById('ds-balance')
-      document.getElementById('volc-balance').innerHTML = ''
-      if (!balance) {
-        el.innerHTML = '<div style="font-size:11px;color:rgba(255,255,255,0.3)">暂无余额数据</div>'
-        return
-      }
-      if (balance.error) {
-        el.innerHTML = `<div class="error-msg">${balance.error}</div>`
-        return
-      }
-      if (!balance.balance_infos || !balance.balance_infos.length) {
-        el.innerHTML = '<div style="font-size:11px;color:rgba(255,255,255,0.3)">暂无余额数据</div>'
-        return
-      }
-
-      let html = '<div class="balance-grid">'
-      for (const info of balance.balance_infos) {
-        const total = parseFloat(info.total_balance) || 0
-        const granted = parseFloat(info.granted_balance) || 0
-        const toppedUp = parseFloat(info.topped_up_balance) || 0
-        const sym = info.currency === 'USD' ? '$' : '¥'
-
-        html += `
-          <div class="balance-card">
-            <div class="label">总余额</div>
-            <div class="value green">${sym}${total.toFixed(2)}</div>
-          </div>
-          <div class="balance-card">
-            <div class="label">充值额度</div>
-            <div class="value">${sym}${toppedUp.toFixed(2)}</div>
-          </div>
-          <div class="balance-card">
-            <div class="label">赠送额度</div>
-            <div class="value orange">${sym}${granted.toFixed(2)}</div>
-          </div>
-          <div class="balance-card">
-            <div class="label">币种</div>
-            <div class="value" style="font-size:13px">${info.currency || 'CNY'}</div>
-          </div>
-        `
-      }
-      html += '</div>'
-      el.innerHTML = html
-    }
-
-    // Listen for balance updates from main process
     window.electronAPI.onBalanceUpdate((b) => {
       balance = b
-      renderBalance()
+      renderAll(b)
       updateBudgetStatus()
+      updateBadges(b && b._provider)
     })
 
     init()

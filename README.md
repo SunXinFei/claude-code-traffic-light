@@ -1,35 +1,19 @@
 # Claude Code Traffic Light 🚦
 
-macOS / Windows 浮动红绿灯，一眼看懂 Claude Code 在干嘛。[English](README_EN.md)
-
 ![macOS](https://img.shields.io/badge/macOS-supported-blue)
 ![Windows](https://img.shields.io/badge/Windows-supported-blue)
 ![Electron](https://img.shields.io/badge/Electron-31-blue)
 
-## 演示
+## 产品介绍
 
-### 三灯模式（黄灯 · 等待用户确认）
-
-![三灯模式](demo1.gif)
-
-### 单灯模式（红灯呼吸 · 忙碌）
-
-![红灯呼吸](demo2.gif)
-
-## 灯的含义
-
-| 灯 | 状态 | 含义 |
-|----|------|------|
-| 🔴 红灯呼吸 | 忙碌 | Claude 正在处理/调用工具 |
-| 🟡 黄灯闪烁 | 等你 | Claude 在问你问题，等你yes |
-| 🟢 绿灯常亮 | 完成 | Claude 处理完毕，等你输入 |
+![Claude Code Traffic Light 产品介绍](image.png)
 
 ## 功能
 
 - **真正置顶** — Electron 窗口置顶，全屏/多桌面都能看到
 - **精美 UI** — CSS 交通灯，呼吸/脉冲/环形动画，深色/浅色主题
 - **AI 余额光环** — Apple Watch 风格渐变色环（红→橙→黄→绿），直观显示大模型API 余额比例
-- **AI 用量查询** — 支持 DeepSeek 余额与火山 Ark Coding Plan 配额两种查询，展示 Claude Code 套餐的 session / weekly / monthly 三档配额使用百分比与重置时间
+- **AI 余额/用量查询** - 支持 10 个大模型供应商：DeepSeek、阶跃星辰、硅基流动、OpenRouter、Novita（按量付费余额）与火山 Ark、Kimi、智谱 GLM、MiniMax、ZenMux（Coding Plan 用量），余额/用量光环一眼掌握
 - **模型供应商切换** — 集成 [cc-switch](https://github.com/farion1231/cc-switch) 核心能力，在设置面板 / 托盘菜单一键切换 Claude Code 使用的 API（25+ 内置预设，hooks 等配置自动保留）
 - **声音提示** — Web Audio 合成提示音，可静音
 - **多项目** — 同时跑多个 Claude Code 会话，自动切换，托盘菜单也可手动选择
@@ -100,35 +84,37 @@ npm run dist:win
 
 ## AI 余额光环
 
-灯光外圈有一道 Apple Watch 运动环风格的渐变色环，显示当前启用 provider 的用量比例。支持两个 provider，互斥切换：
+灯光外圈有一道 Apple Watch 运动环风格的渐变色环，显示当前启用供应商的余额/用量比例。在「AI 模型设置」里从两类中各选一个供应商，填入凭证并保存即启用，两类互斥切换。查询能力参考 [cc-switch](https://github.com/farion1231/cc-switch)，各供应商的接口、认证、解析逻辑集中在 `electron/main.cjs` 的 provider 注册表。
 
-### DeepSeek（现金余额）
+### 按量付费余额（金额类）
 
-- **渐变色**：红 → 橙 → 黄 → 绿，余额越低越偏红
+支持 DeepSeek、阶跃星辰、硅基流动、OpenRouter、Novita AI，只需一个 API Key：
+
+- **渐变色**：红 -> 橙 -> 黄 -> 绿，余额越低越偏红
 - **比例计算**：`当前余额 / 手动预算`，未设预算时自动用充值额度
-- **API Key**：优先读环境变量 `DEEPSEEK_API_KEY`，也可在设置弹窗中配置
+- **凭证**：优先读环境变量（如 `DEEPSEEK_API_KEY`），也可在设置弹窗配置，每个供应商旁附「获取密钥」直达链接
 - **设置弹窗**：点击灯光下方的余额文案或设置面板中的"AI 设置"按钮打开
 
-### 火山 Ark · Claude Code Coding Plan（套餐配额）
+### Coding Plan 用量（百分比类）
 
-展示 Claude Code 套餐的三档配额使用百分比：
+支持火山 Ark、Kimi For Coding、智谱 GLM、MiniMax、ZenMux，展示套餐的三档配额使用百分比与重置时间：
 
-| Level | 含义 | 数据来源 |
-|-------|------|----------|
-| Session | 当前会话用量 | `QuotaUsage[Level=session]` |
-| Weekly | 近 1 周累计用量 | `QuotaUsage[Level=weekly]` |
-| Monthly | 近 1 月累计用量 | `QuotaUsage[Level=monthly]` |
+| Level | 含义 |
+|-------|------|
+| 5 小时 | 当前滚动窗口用量 |
+| Weekly | 近 1 周累计用量 |
+| Monthly | 近 1 月累计用量（仅火山 Ark） |
 
-- **外环比例**：`1 - monthly.percent / 100`（monthly 剩余比例，用得越多环越空）
-- **主界面小字**：`Ark 2%/0%/5%`（session / weekly / monthly）
-- **悬浮 tooltip**：完整三档百分比 + monthly 剩余
-- **设置卡片**：每档单独显示已用百分比、剩余百分比、相对重置时间（如 `6天07时07分后刷新`）
-- **认证**：火山引擎 IAM Access Key ID + Secret Access Key（长期密钥）
-  - 优先读环境变量 `VOLC_AK` / `VOLC_SK`，也可在设置弹窗中配置
-  - AK/SK 以对象形式存储在 `~/.claude/traffic_light/api_keys.json` 的 `volcengine` 字段
-- **签名**：HMAC-SHA256 预签名 URL，host 参与签名，body 不签名（`X-NotSignBody=1`），实现见 `electron/volcSign.cjs`
-- **接口**：`POST https://ark.cn-beijing.volcengineapi.com?Action=GetCodingPlanUsage&Version=2024-01-01`
-- **刷新**：启动时拉一次，之后每小时自动刷新；设置弹窗里也有"刷新用量"按钮
+- **外环比例**：用最长可用窗口（monthly / weekly / 5h）的剩余比例，用得越多环越空
+- **主界面小字**：`2% / 0% / 5%`（5h / weekly / monthly）
+- **设置卡片**：每档单独显示已用百分比、剩余百分比、相对重置时间
+- **认证**：火山 Ark 用 IAM Access Key ID + Secret（优先环境变量 `VOLC_AK` / `VOLC_SK`，签名实现见 `electron/volcSign.cjs`）；其余用 API Key；ZenMux 额外需填 Base URL
+- **刷新**：启动时拉一次，之后每小时自动刷新；设置弹窗也有「刷新」按钮
+
+## 迭代计划
+
+- 📱 **与手机和手表连接** - 将红绿灯状态同步到手机 / 智能手表，离开桌面也能第一时间知道 Claude Code 在等你确认或已完成
+- 🗂 **多项目并行最优展示** - 同时运行多个 Claude Code 会话时，探索更清晰的状态汇总、切换与并行展示方案
 
 ## 要求
 

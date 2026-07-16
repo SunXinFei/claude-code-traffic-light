@@ -53,6 +53,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getSelectedProvider: () => ipcRenderer.invoke('get-selected-provider'),
   selectProvider: (p) => ipcRenderer.send('select-provider', p),
 
+  // 多供应商余额查询（参考 cc-switch）
+  providerList: () => ipcRenderer.invoke('provider-list'),
+  getProviderConfig: (id) => ipcRenderer.invoke('get-provider-config', id),
+  setProviderConfig: (id, cfg) => ipcRenderer.send('set-provider-config', id, cfg),
+
   // Claude 模型供应商切换（复刻 cc-switch）
   ccGetProviders: () => ipcRenderer.invoke('cc:get-providers'),
   ccGetCurrentProvider: () => ipcRenderer.invoke('cc:get-current-provider'),
