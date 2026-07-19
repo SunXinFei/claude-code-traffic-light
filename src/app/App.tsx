@@ -46,10 +46,12 @@ const LIGHT_CONFIG = {
 const ORDER: Light[] = ["red", "yellow", "green"];
 
 export default function App() {
-  const [active, setActive]           = useState<Light>("yellow");
+  // 启动默认稳定绿灯（就绪态）。脉冲只在 applyState 收到 state-change=green 时触发，
+  // 所以这里 greenSteady 必须为 true，否则绿灯会一直脉冲（无人启动 2.5s 定时器）。
+  const [active, setActive]           = useState<Light>("green");
   const [theme, setThemeState]        = useState<Theme>("dark");
   const [style, setStyleState]        = useState<Style>("triple");
-  const [greenSteady, setGreenSteady] = useState(false);
+  const [greenSteady, setGreenSteady] = useState(true);
   const [muted, setMuted]             = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [currentProject, setCurrentProject] = useState("");
@@ -266,13 +268,13 @@ export default function App() {
           50% { opacity: 0.2; transform: scale(0.93); }
         }
         @keyframes ring-pulse {
-          0% { box-shadow: 0 0 0 0px var(--ring-color); opacity: 1; }
-          100% { box-shadow: 0 0 0 20px transparent; opacity: 0; }
+          0%   { transform: scale(1);   opacity: 0.9; }
+          100% { transform: scale(1.5); opacity: 0; }
         }
         .light-breathe-red { animation: breathe-red 2s ease-in-out infinite; }
-        .light-active { animation: pulse-glow 0.55s ease-in-out infinite; }
-        .ring-pulse-yellow { --ring-color: rgba(255,159,10,0.6); animation: ring-pulse 0.55s ease-out infinite; }
-        .ring-pulse-green  { --ring-color: rgba(48,209,88,0.6);  animation: ring-pulse 0.55s ease-out infinite; }
+        .light-active { animation: pulse-glow 0.55s ease-in-out infinite; will-change: transform, opacity; }
+        .ring-pulse-yellow { --ring-color: rgba(255,159,10,0.6); animation: ring-pulse 0.55s ease-out infinite; will-change: transform, opacity; }
+        .ring-pulse-green  { --ring-color: rgba(48,209,88,0.6);  animation: ring-pulse 0.55s ease-out infinite; will-change: transform, opacity; }
         .no-drag { -webkit-app-region: no-drag; }
       `}</style>
 
@@ -318,7 +320,7 @@ export default function App() {
                   {isBlinking && (
                     <div
                       className={`ring-pulse-${active}`}
-                      style={{ position: "absolute", width: 44, height: 44, borderRadius: "50%", pointerEvents: "none" }}
+                      style={{ position: "absolute", width: 44, height: 44, borderRadius: "50%", pointerEvents: "none", boxShadow: "0 0 10px var(--ring-color)" }}
                     />
                   )}
                   <div
@@ -369,7 +371,7 @@ export default function App() {
                 {isBlinking && (
                   <div
                     className={`ring-pulse-${light}`}
-                    style={{ position: "absolute", width: 44, height: 44, borderRadius: "50%", pointerEvents: "none" }}
+                    style={{ position: "absolute", width: 44, height: 44, borderRadius: "50%", pointerEvents: "none", boxShadow: "0 0 10px var(--ring-color)" }}
                   />
                 )}
                 <div
@@ -515,7 +517,7 @@ export default function App() {
             </div>
           </label>
 
-          <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer" }}>
+          {/* <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer" }}>
             <span style={{ fontSize: 11, color: dark ? "rgba(255,255,255,0.7)" : "rgba(0,0,0,0.6)" }}>
               {dark ? "🌙" : "☀️"}
             </span>
@@ -535,6 +537,34 @@ export default function App() {
               <div style={{
                 position: "absolute", top: 2,
                 left: dark ? 14 : 2,
+                width: 14, height: 14, borderRadius: "50%",
+                background: "white",
+                transition: "left 0.2s",
+                boxShadow: "0 1px 3px rgba(0,0,0,0.3)",
+              }} />
+            </div>
+          </label> */}
+
+          <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer" }}>
+            <span style={{ fontSize: 11, color: dark ? "rgba(255,255,255,0.7)" : "rgba(0,0,0,0.6)" }}>
+              {style === "single" ? "🔴" : "🚦"}
+            </span>
+            <div
+              onClick={() => {
+                const next = style === "single" ? "triple" : "single";
+                setStyleState(next);
+                window.electronAPI.setStyle(next);
+              }}
+              style={{
+                width: 32, height: 18, borderRadius: 9,
+                background: style === "triple" ? "#30D158" : (dark ? "rgba(255,255,255,0.15)" : "rgba(0,0,0,0.12)"),
+                position: "relative", transition: "background 0.2s",
+                cursor: "pointer",
+              }}
+            >
+              <div style={{
+                position: "absolute", top: 2,
+                left: style === "triple" ? 14 : 2,
                 width: 14, height: 14, borderRadius: "50%",
                 background: "white",
                 transition: "left 0.2s",
