@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Claude Code 等你确认</title>
+<style>
+:root{
+  --bg1:#dfe9ff;--bg2:#f6f8ff;--glass:rgba(255,255,255,.5);--line:rgba(255,255,255,.7);
+  --blue:#007aff;--red:#ff3b30;--green:#30d158;--text:#111827;--muted:#6b7280;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;margin:0}
+body{
+  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display",sans-serif;
+  background:radial-gradient(circle at top,#c8dcff,#eef3ff 60%,#f7f9ff);
+  color:var(--text);
+  min-height:100vh;
+  display:flex;flex-direction:column;align-items:center;
+  padding:calc(env(safe-area-inset-top) + 24px) 20px calc(env(safe-area-inset-bottom) + 24px);
+  overflow-x:hidden;
+}
+/* 顶部项目名（突出，替代原 C logo） */
+.proj-tag{font-size:13px;color:var(--blue);font-weight:600;letter-spacing:.5px;margin-bottom:10px}
+h1{margin:0;font-size:28px;font-weight:700;text-align:center}
+.sub{text-align:center;color:var(--muted);font-size:16px;margin-top:6px}
+.status{text-align:center;font-size:24px;font-weight:700;margin:26px 0 18px;color:var(--text)}
+/* 权限卡片 */
+.card{
+  width:100%;max-width:360px;
+  background:var(--glass);backdrop-filter:blur(22px);-webkit-backdrop-filter:blur(22px);
+  border:1px solid var(--line);border-radius:28px;padding:20px;
+  box-shadow:0 12px 30px rgba(0,0,0,.08);
+}
+.title{font-weight:700;font-size:17px}
+.code{margin-top:12px;padding:13px;border-radius:14px;background:rgba(255,255,255,.75);font-family:ui-monospace,monospace;font-size:14px;word-break:break-all}
+.meta{display:flex;justify-content:space-between;margin-top:14px;color:var(--muted);font-size:13px}
+.link{margin-top:14px;color:var(--blue);font-weight:600;font-size:14px;cursor:pointer}
+/* 更多操作面板（默认收起） */
+.more{display:none;width:100%;max-width:360px;margin-top:14px}
+.more.show{display:block;animation:up .25s ease}
+@keyframes up{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:none}}
+.more .btn{display:block;width:100%;padding:15px;border:none;border-radius:14px;font-size:16px;font-weight:600;cursor:pointer;margin-bottom:10px}
+.b-yes{background:var(--blue);color:#fff}
+.b-no{background:#eceff4;color:var(--text)}
+input{width:100%;padding:14px;border-radius:14px;border:1px solid var(--line);background:rgba(255,255,255,.6);font-size:16px;margin-bottom:10px;outline:none;color:var(--text)}
+input:focus{border-color:var(--blue)}
+.b-send{background:var(--green);color:#fff}
+/* 底部：Decline + 滑动批准 */
+.bottom{width:100%;max-width:360px;margin-top:auto;padding-top:24px}
+.decline{text-align:center;color:var(--red);font-weight:600;margin-bottom:14px;cursor:pointer;padding:8px}
+.slider{
+  height:62px;border-radius:31px;background:rgba(255,255,255,.55);border:1px solid var(--line);
+  position:relative;overflow:hidden;backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);
+  touch-action:none;
+}
+.slider.done{background:var(--green);border-color:var(--green)}
+.knob{
+  position:absolute;left:5px;top:5px;width:52px;height:52px;border-radius:26px;
+  background:#fff;display:flex;align-items:center;justify-content:center;
+  box-shadow:0 8px 20px rgba(0,0,0,.18);font-size:20px;cursor:grab;z-index:2;
+}
+.knob:active{cursor:grabbing}
+.lbl{line-height:62px;text-align:center;font-weight:600;color:#4b5563;font-size:15px}
+.slider.done .lbl{color:#fff}
+.slider.done .knob{display:none}
+/* 发送成功遮罩 */
+.sent{position:fixed;inset:0;background:rgba(0,0,0,.5);display:none;flex-direction:column;align-items:center;justify-content:center;z-index:9}
+.sent.show{display:flex}
+.sent .ok{width:88px;height:88px;border-radius:50%;background:var(--green);display:flex;align-items:center;justify-content:center;font-size:42px;color:#fff;margin-bottom:18px;animation:pop .3s ease}
+@keyframes pop{from{transform:scale(0)}to{transform:scale(1)}}
+.sent p{font-size:18px;color:#fff;font-weight:600}
+</style></head>
+<body>
+
+<div class="proj-tag" id="projTag">PROJECT</div>
+<h1>Claude Code</h1>
+<div class="sub" id="projName">项目</div>
+<div class="status">等你确认</div>
+
+<div class="card">
+  <div class="title">权限请求</div>
+  <div class="code" id="detail">Claude 需要你回来操作</div>
+  <div class="meta"><span>项目</span><span id="metaProj">—</span></div>
+  <div class="link" onclick="toggleMore()">查看更多操作 ▾</div>
+</div>
+
+<div class="more" id="more">
+  <button class="btn b-yes" onclick="respond('yes')">✓ 同意 (y)</button>
+  <button class="btn b-no" onclick="respond('no')">✗ 拒绝 (n)</button>
+  <input id="txt" placeholder="输入文字后发送（回车）">
+  <button class="btn b-send" onclick="respond('text')">发送文字</button>
+</div>
+
+<div class="bottom">
+  <div class="decline" onclick="respond('no')">拒绝</div>
+  <div class="slider" id="slider">
+    <div class="knob" id="knob">→</div>
+    <div class="lbl">滑动批准（回车）</div>
+  </div>
+</div>
+
+<div class="sent" id="sent"><div class="ok">✓</div><p id="sentTxt">已发送</p></div>
+
+<script>
+// 项目名从 URL 取（主进程注入），默认占位
+var qs = new URLSearchParams(location.search);
+var proj = qs.get('p') || 'Claude Code';
+document.getElementById('projTag').textContent = proj.toUpperCase();
+document.getElementById('projName').textContent = proj;
+document.getElementById('metaProj').textContent = proj;
+document.title = proj + ' · Claude Code';
+
+function toggleMore(){
+  var m = document.getElementById('more');
+  m.classList.toggle('show');
+}
+
+function respond(action){
+  var text = action === 'text' ? document.getElementById('txt').value : '';
+  var body = JSON.stringify({action:action, text:text});
+  fetch('/respond' + location.search, {method:'POST', headers:{'Content-Type':'application/json'}, body:body})
+    .then(function(r){return r.json()})
+    .then(function(d){ showSent(d.ok ? '已发送' : '发送失败'); })
+    .catch(function(){ showSent('网络错误'); });
+}
+
+function showSent(t){
+  document.getElementById('sentTxt').textContent = t;
+  document.getElementById('sent').classList.add('show');
+}
+
+// 滑动批准：拖到右侧 70% 即触发回车
+(function(){
+  var slider = document.getElementById('slider');
+  var knob = document.getElementById('knob');
+  var maxLeft = 0, dragging = false, startX = 0, startLeft = 5;
+  function measure(){ maxLeft = slider.offsetWidth - knob.offsetWidth - 10; }
+  function start(x){
+    if (slider.classList.contains('done')) return;
+    measure(); dragging = true; startX = x; startLeft = knob.offsetLeft;
+    knob.style.transition = 'none';
+  }
+  function move(x){
+    if (!dragging) return;
+    var dx = x - startX;
+    var left = Math.max(5, Math.min(maxLeft, startLeft + dx));
+    knob.style.left = left + 'px';
+    if (left >= maxLeft * 0.7) { done(); }
+  }
+  function end(){
+    if (!dragging) return;
+    dragging = false;
+    knob.style.transition = 'left .2s';
+    if (!slider.classList.contains('done')) knob.style.left = '5px';
+  }
+  function done(){
+    if (slider.classList.contains('done')) return;
+    slider.classList.add('done');
+    knob.style.left = maxLeft + 'px';
+    respond('enter');
+  }
+  slider.addEventListener('touchstart', function(e){ start(e.touches[0].clientX); }, {passive:true});
+  slider.addEventListener('touchmove', function(e){ move(e.touches[0].clientX); }, {passive:true});
+  slider.addEventListener('touchend', end);
+  // 鼠标（桌面调试）
+  slider.addEventListener('mousedown', function(e){ start(e.clientX); e.preventDefault(); });
+  window.addEventListener('mousemove', function(e){ move(e.clientX); });
+  window.addEventListener('mouseup', end);
+  window.addEventListener('resize', measure);
+})();
+</script>
+</body></html>

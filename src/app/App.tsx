@@ -21,6 +21,7 @@ declare global {
       activateHost: () => void;
       getMute: () => Promise<boolean>;
       setMute: (muted: boolean) => void;
+      cdAlert: (title: string, body: string) => Promise<void>;
       setWindowHeight: (h: number) => void;
       getProjects: () => Promise<string[]>;
       getSelectedProject: () => Promise<string>;
@@ -58,6 +59,11 @@ export default function App() {
   const [balance, setBalance] = useState<any>(null);
   const greenTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const audioCtxRef   = useRef<AudioContext | null>(null);
+
+  // 倒计时（完全独立于红绿灯状态；归零仅停在 0:00，不提醒）
+  const [cdMinutes, setCdMinutes] = useState(3);                       // 设定分钟数
+  const [cdRemaining, setCdRemaining] = useState<number | null>(null); // 剩余秒数；null=未启用
+  const [cdRunning, setCdRunning] = useState(false);
 
   useEffect(() => {
     window.electronAPI.getTheme().then((t) => {
@@ -145,6 +151,29 @@ export default function App() {
     } catch {}
   }, [muted]);
 
+  // 倒计时归零提醒：三声蜂鸣（尊重静音开关）
+  const playCdAlert = useCallback(() => {
+    if (muted) return;
+    try {
+      if (!audioCtxRef.current) audioCtxRef.current = new AudioContext();
+      const ctx = audioCtxRef.current;
+      for (let i = 0; i < 3; i++) {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.type = "sine";
+        const t = ctx.currentTime + i * 0.32;
+        osc.frequency.setValueAtTime(880, t);
+        gain.gain.setValueAtTime(0, t);
+        gain.gain.setValueAtTime(0.22, t + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
+        osc.start(t);
+        osc.stop(t + 0.22);
+      }
+    } catch {}
+  }, [muted]);
+
   const applyState = useCallback((state: string) => {
     const s = state as Light;
     if (!ORDER.includes(s)) return;
@@ -166,6 +195,43 @@ export default function App() {
       if (greenTimerRef.current) clearTimeout(greenTimerRef.current);
     };
   }, [applyState]);
+
+  // ---------- 倒计时 ----------
+  const formatCd = (s: number) => {
+    const neg = s < 0;
+    const abs = Math.abs(s);
+    const m = Math.floor(abs / 60);
+    const sec = abs % 60;
+    return `${neg ? "-" : ""}${m}:${sec.toString().padStart(2, "0")}`;
+  };
+
+  const startCountdown = () => {
+    const total = Math.max(1, Math.round(cdMinutes * 60));
+    // 设定3分钟 -> 立即从 2:59 开始倒数（3:00 不出现）
+    setCdRemaining(total - 1);
+    setCdRunning(true);
+  };
+
+  const stopCountdown = () => {
+    setCdRunning(false);
+    setCdRemaining(null);
+  };
+
+  useEffect(() => {
+    if (!cdRunning) return;
+    const id = setInterval(() => {
+      // 归零后继续负数倒计时（超时计时），直到用户手动停止
+      setCdRemaining((r) => (r == null ? r : r - 1));
+    }, 1000);
+    return () => clearInterval(id);
+  }, [cdRunning]);
+
+  // 到 0 的瞬间：蜂鸣 + 系统通知（仅触发一次，负数阶段不再触发）
+  useEffect(() => {
+    if (cdRemaining !== 0) return;
+    playCdAlert();
+    window.electronAPI.cdAlert?.("⏰ 倒计时结束", `设定 ${cdMinutes} 分钟的倒计时已到`);
+  }, [cdRemaining, playCdAlert, cdMinutes]);
 
   const dark = theme === "dark";
 
@@ -225,9 +291,9 @@ export default function App() {
 
   useEffect(() => {
     const hasBalance = formatBalanceShort() !== null;
-    const balanceH = hasBalance ? 20 : 0;
+    const balanceH = hasBalance ? 28 : 0;
     const base = (style === "single" ? 110 : 220) + balanceH;
-    const withSettings = style === "single" ? 200 : 310;
+    const withSettings = style === "single" ? 280 : 400; // 含倒计时控件 + AI设置按钮
     window.electronAPI.setWindowHeight(showSettings ? withSettings : base);
   }, [showSettings, style, balance]);
 
@@ -281,17 +347,17 @@ export default function App() {
       <div className="relative inline-flex">
         {/* Ring background track — dark version of gradient */}
         <div style={{
-          position: "absolute", inset: -4, borderRadius: 28,
+          position: "absolute", inset: -5, borderRadius: 29,
           background: dark
-            ? "conic-gradient(from 0deg, rgba(255,59,48,0.25), rgba(255,149,0,0.25), rgba(255,204,0,0.25), rgba(52,199,89,0.25), rgba(48,209,88,0.25))"
-            : "conic-gradient(from 0deg, rgba(255,59,48,0.18), rgba(255,149,0,0.18), rgba(255,204,0,0.18), rgba(52,199,89,0.18), rgba(48,209,88,0.18))",
+            ? "conic-gradient(from 0deg, rgba(255,59,48,0.5), rgba(255,149,0,0.5), rgba(255,204,0,0.5), rgba(52,199,89,0.5), rgba(48,209,88,0.5))"
+            : "conic-gradient(from 0deg, rgba(255,59,48,0.35), rgba(255,149,0,0.35), rgba(255,204,0,0.35), rgba(52,199,89,0.35), rgba(48,209,88,0.35))",
           pointerEvents: "none",
         }} />
         {/* Ring progress — full gradient, masked to percentage */}
         {ringPercent > 0 && (
           <div style={{
-            position: "absolute", inset: -4, borderRadius: 28,
-            background: "conic-gradient(from 0deg, rgba(255,59,48,0.8), rgba(255,149,0,0.8), rgba(255,204,0,0.8), rgba(52,199,89,0.8), rgba(48,209,88,0.8))",
+            position: "absolute", inset: -5, borderRadius: 29,
+            background: `conic-gradient(from 0deg, rgba(255,59,48,0.8), rgba(255,149,0,0.8), rgba(255,204,0,0.8), rgba(52,199,89,0.8), rgba(48,209,88,0.8) ${Math.max(0, ringDeg - 3)}deg, #000 ${ringDeg}deg)`,
             WebkitMaskImage: `conic-gradient(from 0deg, black 0deg, black ${ringDeg}deg, transparent ${ringDeg}deg, transparent 360deg)`,
             maskImage: `conic-gradient(from 0deg, black 0deg, black ${ringDeg}deg, transparent ${ringDeg}deg, transparent 360deg)`,
             pointerEvents: "none",
@@ -308,7 +374,34 @@ export default function App() {
           className="relative flex flex-col items-center"
           style={{ ...housing, borderRadius: 24, width: 80, padding: style === "single" ? "16px 0 16px" : "16px 0 20px", WebkitAppRegion: "drag" } as React.CSSProperties}
         >
-        {style === "single" ? (
+        {cdRemaining !== null ? (
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", width: "100%", minHeight: style === "single" ? 44 : 156, padding: "4px 0" }}>
+            {(() => {
+              const cdText = formatCd(cdRemaining);
+              const big = style === "single" ? 26 : 34;
+              const cdFs = cdText.length <= 4 ? big : cdText.length === 5 ? 26 : 20;
+              return (
+                <div style={{
+                  fontSize: cdFs,
+                  fontWeight: 700,
+                  fontVariantNumeric: "tabular-nums",
+                  letterSpacing: -1,
+                  lineHeight: 1,
+                  color: (cdRemaining ?? 0) < 0
+                    ? "#FF453A"
+                    : cdRemaining === 0
+                      ? (dark ? "rgba(255,159,10,0.95)" : "rgba(255,149,0,0.9)")
+                      : (dark ? "rgba(255,255,255,0.92)" : "rgba(0,0,0,0.75)"),
+                }}>
+                  {cdText}
+                </div>
+              );
+            })()}
+            <div style={{ fontSize: 9, marginTop: 6, color: dark ? "rgba(255,255,255,0.45)" : "rgba(0,0,0,0.4)" }}>
+              {cdRunning ? ((cdRemaining ?? 0) < 0 ? "超时" : "倒计时") : "已结束"}
+            </div>
+          </div>
+        ) : style === "single" ? (
           <div className="flex flex-col items-center">
             {(() => {
               const cfg = LIGHT_CONFIG[active];
@@ -455,9 +548,17 @@ export default function App() {
           className="no-drag"
           style={{
             marginTop: 4,
+            width: 80,
+            boxSizing: "border-box",
             fontSize: 9,
-            color: dark ? "rgba(255,255,255,0.5)" : "rgba(0,0,0,0.4)",
+            color: dark ? "rgba(255,255,255,0.62)" : "rgba(0,0,0,0.5)",
             textAlign: "center",
+            background: dark ? "rgba(44,44,46,0.85)" : "rgba(245,245,247,0.92)",
+            border: dark ? "1px solid rgba(255,255,255,0.08)" : "1px solid rgba(0,0,0,0.06)",
+            borderRadius: 8,
+            padding: "3px 2px",
+            whiteSpace: "nowrap",
+            boxShadow: "0 2px 6px rgba(0,0,0,0.25)",
             WebkitAppRegion: "no-drag",
             cursor: "pointer",
           }}
@@ -491,6 +592,45 @@ export default function App() {
             WebkitAppRegion: "no-drag",
           } as React.CSSProperties}
         >
+          {/* 倒计时 */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 4, justifyContent: "center" }}>
+              <span style={{ fontSize: 11, color: dark ? "rgba(255,255,255,0.7)" : "rgba(0,0,0,0.6)" }}>⏱</span>
+              <input
+                type="number"
+                min={1}
+                step={1}
+                value={cdMinutes}
+                disabled={cdRunning}
+                onChange={(e) => setCdMinutes(Math.max(1, Math.floor(Number(e.target.value) || 1)))}
+                style={{
+                  width: 38, fontSize: 10, textAlign: "center",
+                  padding: "2px 0", borderRadius: 4, border: "none",
+                  background: dark ? "rgba(255,255,255,0.1)" : "rgba(0,0,0,0.06)",
+                  color: dark ? "rgba(255,255,255,0.85)" : "rgba(0,0,0,0.7)",
+                  WebkitAppRegion: "no-drag",
+                }}
+              />
+              <span style={{ fontSize: 9, color: dark ? "rgba(255,255,255,0.5)" : "rgba(0,0,0,0.4)" }}>分</span>
+            </div>
+            <button
+              onClick={cdRunning ? stopCountdown : startCountdown}
+              style={{
+                fontSize: 9, border: "none", borderRadius: 6,
+                padding: "4px 0", cursor: "pointer",
+                background: cdRunning
+                  ? "rgba(255,69,58,0.85)"
+                  : (dark ? "rgba(48,209,88,0.85)" : "rgba(48,209,88,0.9)"),
+                color: "#fff",
+                display: "flex", alignItems: "center", justifyContent: "center", gap: 3,
+                fontVariantNumeric: "tabular-nums",
+                WebkitAppRegion: "no-drag",
+              }}
+            >
+              {cdRunning ? `停止 ${formatCd(cdRemaining ?? 0)}` : "▶ 开始"}
+            </button>
+          </div>
+
           <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer" }}>
             <span style={{ fontSize: 11, color: dark ? "rgba(255,255,255,0.7)" : "rgba(0,0,0,0.6)" }}>
               {muted ? "🔇" : "🔔"}

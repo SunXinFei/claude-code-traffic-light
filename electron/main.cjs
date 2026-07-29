@@ -1,9 +1,10 @@
-const { app, BrowserWindow, ipcMain, Menu, Tray, nativeImage, screen, clipboard, shell } = require('electron')
+const { app, BrowserWindow, ipcMain, Menu, Tray, nativeImage, screen, clipboard, shell, Notification } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const os = require('os')
 const child_process = require('child_process')
 const https = require('https')
+const http = require('http')
 const { URL } = require('url')
 const { buildArkPresignUrl } = require('./volcSign.cjs')
 const providers = require('./providers.cjs')
@@ -356,6 +357,309 @@ function fetchCodingPlanProvider(id) {
       lastBalance = { provider: 'codingplan', quotas }
       transmitBalance()
     } catch (e) { lastBalance = { provider: 'codingplan', error: '解析失败: ' + e.message }; transmitBalance() }
+  })
+}
+
+// ---------- 手机推送（Bark）----------
+// MVP: 仅黄灯（Claude 等你确认）时推一条到手机。手表靠镜像手机通知，不单独做。
+// 官方服务器 https://api.day.app/{key}，零依赖（内置 https）。
+
+function getBarkConfig() {
+  const keys = readApiKeys()
+  const b = keys._bark || {}
+  return {
+    key: b.key || '',
+    server: b.server || 'https://api.day.app',  // 默认官方，可自建
+    enabled: !!b.key,
+  }
+}
+
+function setBarkConfig(cfg) {
+  const keys = readApiKeys()
+  if (!keys._bark) keys._bark = {}
+  if (cfg && cfg.key) {
+    keys._bark.key = cfg.key.trim()
+    keys._bark.server = (cfg.server || '').trim() || 'https://api.day.app'
+  } else {
+    keys._bark = {}
+  }
+  writeApiKeys(keys)
+}
+
+// 已为某项目推过黄灯，避免重复推。状态离开 yellow 后清除，下次再亮黄灯才再推。
+let barkNotifiedProject = null
+// 当前黄灯项目（供手机控制页展示 + 回传时定位窗口）
+let currentYellowProject = null
+
+function sendBarkNotification(title, body, openUrl) {
+  const { key, server } = getBarkConfig()
+  if (!key) return
+  // Bark: GET {server}/{key}/{title}/{body}?...，路径段需 encodeURIComponent
+  let qs = 'isArchive=1&group=Claude+Code'
+  if (openUrl) qs += '&url=' + encodeURIComponent(openUrl)  // 点通知打开此 URL（手机控制页）
+  const url = `${server.replace(/\/+$/, '')}/${encodeURIComponent(key)}/${encodeURIComponent(title)}/${encodeURIComponent(body)}?${qs}`
+  try {
+    const u = new URL(url)
+    https.get({ hostname: u.hostname, path: u.pathname + u.search, headers: { 'Accept': 'application/json' }, timeout: 10000 }, (res) => {
+      res.resume()
+    }).on('error', (e) => console.error('[bark] push failed:', e.message))
+  } catch (e) { console.error('[bark] url error:', e.message) }
+}
+
+// 状态变化钩子：黄灯 -> 推送（带项目名 + 回传控制页 URL）；其它状态清除已推标记。
+function onTrafficStateChange(state, project) {
+  if (state === 'yellow') {
+    currentYellowProject = project
+    if (barkNotifiedProject !== project) {
+      barkNotifiedProject = project
+      const p = project || 'Claude Code'
+      sendBarkNotification('🟡 Claude Code 等你确认', `${p} 需要你回来操作`, getRemoteControlUrl())
+    }
+  } else {
+    // 离开黄灯（变红/绿），清除标记，下次黄灯可再推
+    barkNotifiedProject = null
+    currentYellowProject = null
+  }
+}
+
+// ---------- 手机回传控制（局域网）----------
+// 本地 HTTP 服务：手机点推送通知 -> 打开 http://局域网IP:port/?t=token 控制页 ->
+// 点按钮 -> POST /respond -> activateHostApp(项目) 把窗口置顶 + 敲键回应 Claude Code。
+// 复用现有 activateHostApp 的跨平台窗口定位能力，只加「往激活窗口敲键」。
+
+const REMOTE_PORT = 37271
+const remoteToken = Math.random().toString(36).slice(2, 10)
+let remoteLanIp = ''
+let remoteServer = null
+
+function discoverLanIp() {
+  try {
+    const ifaces = os.networkInterfaces()
+    for (const name of Object.keys(ifaces)) {
+      for (const it of ifaces[name]) {
+        if (it.family === 'IPv4' && !it.internal) return it.address
+      }
+    }
+  } catch {}
+  return ''
+}
+
+function getRemoteControlUrl() {
+  if (!remoteLanIp) return ''
+  return `http://${remoteLanIp}:${REMOTE_PORT}/?t=${remoteToken}`
+}
+
+function getRemoteStatus() {
+  return { url: getRemoteControlUrl(), running: !!remoteServer, port: REMOTE_PORT }
+}
+
+// 敲键注入：mac 用 System Events keystroke（需辅助功能权限，与窗口激活同权限）；
+// win 用 WScript.Shell.SendKeys 发给前台窗口。action: enter|yes|no|text
+function injectKeystrokes(action, text) {
+  if (process.platform === 'darwin') {
+    // keystroke 对非 ASCII（中文）不稳，改用剪贴板粘贴
+    if (action === 'text' && text && /[^\x00-\x7F]/.test(text)) {
+      const clip = escAppleScript(text)
+      const script = `set the clipboard to "${clip}"\ntell application "System Events" to keystroke "v" using command down\ndelay 0.15\ntell application "System Events" to keystroke return`
+      try { child_process.execFileSync('osascript', ['-e', script], { timeout: 3000 }) } catch (e) { console.error('[remote] mac paste failed:', e.message) }
+      return
+    }
+    // ASCII 路径：keystroke 单字符 + return（注意 return 不加引号才是回车键）
+    let script
+    if (action === 'enter') {
+      script = `tell application "System Events" to keystroke return`
+    } else if (action === 'yes' || action === 'no') {
+      const ch = action === 'yes' ? 'y' : 'n'
+      script = `tell application "System Events" to keystroke "${ch}"\ndelay 0.05\ntell application "System Events" to keystroke return`
+    } else if (action === 'text' && text) {
+      const k = escAppleScript(text)
+      script = `tell application "System Events" to keystroke "${k}"\ndelay 0.05\ntell application "System Events" to keystroke return`
+    } else return
+    try { child_process.execFileSync('osascript', ['-e', script], { timeout: 3000 }) } catch (e) { console.error('[remote] mac keystroke failed:', e.message) }
+  } else if (process.platform === 'win32') {
+    // SendKeys: ~ = Enter；多字节用剪贴板
+    if (action === 'text' && text && /[^\x00-\x7F]/.test(text)) {
+      const clip = text.replace(/'/g, "''")
+      const paste = `$w = New-Object -ComObject WScript.Shell; Set-Clipboard -Value '${clip}'; Start-Sleep -Milliseconds 50; $w.SendKeys('^v'); Start-Sleep -Milliseconds 100; $w.SendKeys('~')`
+      try { child_process.execFileSync('powershell', ['-NoProfile', '-Command', paste], { encoding: 'utf-8', timeout: 5000 }) } catch (e) { console.error('[remote] win paste failed:', e.message) }
+      return
+    }
+    let send
+    if (action === 'enter') send = '~'
+    else if (action === 'yes') send = 'y~'
+    else if (action === 'no') send = 'n~'
+    else if (action === 'text' && text) send = text.replace(/[{}^%~+()]/g, '{$&}') + '~'  // 转义 SendKeys 特殊字符
+    else return
+    const script = `$w = New-Object -ComObject WScript.Shell; $w.SendKeys('${send.replace(/'/g, "''")}')`
+    try { child_process.execFileSync('powershell', ['-NoProfile', '-Command', script], { encoding: 'utf-8', timeout: 5000 }) } catch (e) { console.error('[remote] win keystroke failed:', e.message) }
+  }
+}
+
+// 处理手机回传：激活窗口 + 敲键
+function handleRemoteRespond(project, action, text) {
+  const target = project || currentYellowProject
+  if (target) activateHostApp(target)
+  // 窗口置顶需要一点时间（mac osascript 内含 delay 0.4），稍候再敲键
+  setTimeout(() => injectKeystrokes(action, text), process.platform === 'darwin' ? 500 : 300)
+}
+
+function remoteControlPage() {
+  const proj = escHtml(currentYellowProject || 'Claude Code')
+  return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><title>Claude Code 等你确认</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;overflow:hidden}
+body{
+  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display",sans-serif;
+  background:
+    radial-gradient(circle at 80% 70%,rgba(124,255,199,.30),transparent 35%),
+    radial-gradient(circle at 20% 80%,rgba(255,180,220,.16),transparent 35%),
+    radial-gradient(circle at 60% 20%,rgba(88,160,255,.22),transparent 40%),
+    linear-gradient(180deg,#0b1630,#14253f 45%,#182c44);
+  background-attachment:fixed;
+  color:#fff;height:100vh;height:100dvh;
+  display:flex;flex-direction:column;align-items:center;
+  padding:calc(env(safe-area-inset-top) + 20px) 20px calc(env(safe-area-inset-bottom) + 20px);
+}
+/* 顶部区 + 中间卡片区可压缩 */
+.main{flex:1 1 auto;width:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:0;overflow:hidden}
+/* 项目名突出 */
+.proj-tag{font-size:12px;color:#7cffc7;font-weight:600;letter-spacing:1px;margin-bottom:10px;text-transform:uppercase}
+h1{font-size:30px;font-weight:700;text-align:center;letter-spacing:.5px}
+.sub{color:#d8e4ff;text-align:center;font-size:16px;margin-top:6px;word-break:break-all}
+.wait{text-align:center;color:#d8e4ff;margin:22px 0 22px;font-size:17px}
+/* 玻璃卡片 */
+.card{
+  width:100%;max-width:340px;padding:22px;border-radius:24px;
+  background:rgba(255,255,255,.10);border:1px solid rgba(255,255,255,.22);
+  backdrop-filter:blur(30px) saturate(180%);-webkit-backdrop-filter:blur(30px) saturate(180%);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.28),0 20px 50px rgba(0,0,0,.18);
+}
+.title{color:#fff;font-weight:700;font-size:16px}
+.cmd{margin:14px 0;color:#fff;font-size:18px;font-weight:300;word-break:break-all}
+.detail{text-align:right;color:#f3f6ff;font-size:14px;cursor:pointer}
+/* 更多操作 */
+.more{display:none;width:100%;max-width:340px;margin-top:14px;max-height:40vh;overflow-y:auto;-webkit-overflow-scrolling:touch}
+.more.show{display:block;animation:up .25s ease}
+@keyframes up{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:none}}
+.more .btn{display:block;width:100%;padding:15px;border:none;border-radius:14px;font-size:16px;font-weight:600;cursor:pointer;margin-bottom:10px}
+.b-yes{background:rgba(0,122,255,.9);color:#fff}
+.b-no{background:rgba(255,69,58,.9);color:#fff}
+input{width:100%;padding:14px;border-radius:14px;border:1px solid rgba(255,255,255,.22);background:rgba(255,255,255,.08);color:#fff;font-size:16px;margin-bottom:10px;outline:none}
+input::placeholder{color:rgba(255,255,255,.4)}
+input:focus{border-color:#7cffc7}
+.b-send{background:rgba(48,209,88,.9);color:#fff}
+/* 底部 Decline + 滑动批准 */
+.bottom{width:100%;max-width:340px;flex-shrink:0;padding-top:16px}
+.decline{text-align:center;color:#fff;font-weight:600;margin-bottom:14px;cursor:pointer;padding:8px;opacity:.85}
+.slider{
+  height:62px;border-radius:31px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.18);
+  position:relative;overflow:hidden;backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);touch-action:none;
+}
+.slider:after{content:'';position:absolute;right:-20px;top:-10px;width:140px;height:80px;background:radial-gradient(circle,rgba(126,255,92,.9),rgba(126,255,92,.15) 55%,transparent 70%);pointer-events:none}
+.slider.done{background:rgba(126,255,92,.9);border-color:rgba(126,255,92,.9)}
+.slider.done:after{display:none}
+.knob{position:absolute;left:4px;top:4px;width:54px;height:54px;border-radius:50%;background:#fff;display:flex;align-items:center;justify-content:center;font-size:20px;color:#0b1630;z-index:2;box-shadow:0 6px 16px rgba(0,0,0,.25)}
+.lbl{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;z-index:1;font-size:15px}
+.slider.done .lbl{color:#0b1630}
+.slider.done .knob{display:none}
+/* 发送成功遮罩 */
+.sent{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;flex-direction:column;align-items:center;justify-content:center;z-index:9;backdrop-filter:blur(8px)}
+.sent.show{display:flex}
+.sent .ok{width:88px;height:88px;border-radius:50%;background:rgba(126,255,92,.95);display:flex;align-items:center;justify-content:center;font-size:42px;color:#0b1630;margin-bottom:18px;animation:pop .3s ease}
+@keyframes pop{from{transform:scale(0)}to{transform:scale(1)}}
+.sent p{font-size:18px;color:#fff;font-weight:600}
+</style></head><body>
+<div class="main">
+  <div class="proj-tag">${proj.toUpperCase()}</div>
+  <h1>Claude Code</h1>
+  <div class="sub">${proj}</div>
+  <div class="wait">等你确认</div>
+  <div class="card">
+    <div class="title">权限请求</div>
+    <div class="cmd">Claude 需要你回来操作</div>
+    <div class="detail" onclick="toggle()">查看更多操作 ›</div>
+  </div>
+  <div class="more" id="more">
+    <button class="btn b-yes" onclick="respond('yes')">✓ 同意 (y)</button>
+    <button class="btn b-no" onclick="respond('no')">✗ 拒绝 (n)</button>
+    <input id="txt" placeholder="输入文字后发送（回车）">
+    <button class="btn b-send" onclick="respond('text')">发送文字</button>
+  </div>
+</div>
+<div class="bottom">
+  <div class="decline" onclick="respond('no')">拒绝</div>
+  <div class="slider" id="slider">
+    <div class="knob">›</div>
+    <div class="lbl">滑动批准（回车）</div>
+  </div>
+</div>
+<div class="sent" id="sent"><div class="ok">✓</div><p id="sentTxt">已发送</p></div>
+<script>
+function toggle(){var m=document.getElementById('more');m.classList.toggle('show');}
+function respond(action){
+  var text=action==='text'?document.getElementById('txt').value:'';
+  fetch('/respond?t=${remoteToken}',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:action,text:text})})
+   .then(function(r){return r.json()})
+   .then(function(d){showSent(d.ok?'已发送':'发送失败');})
+   .catch(function(){showSent('网络错误');});
+}
+function showSent(t){var s=document.getElementById('sent');document.getElementById('sentTxt').textContent=t;s.classList.add('show');}
+// 滑动批准：拖到 70% 触发回车
+(function(){
+  var slider=document.getElementById('slider'),knob=slider.querySelector('.knob');
+  var maxLeft=0,dragging=false,startX=0,startLeft=4;
+  function measure(){maxLeft=slider.offsetWidth-knob.offsetWidth-8;}
+  function start(x){if(slider.classList.contains('done'))return;measure();dragging=true;startX=x;startLeft=knob.offsetLeft;knob.style.transition='none';}
+  function move(x){if(!dragging)return;var left=Math.max(4,Math.min(maxLeft,startLeft+(x-startX)));knob.style.left=left+'px';if(left>=maxLeft*0.7)done();}
+  function end(){if(!dragging)return;dragging=false;knob.style.transition='left .2s';if(!slider.classList.contains('done'))knob.style.left='4px';}
+  function done(){if(slider.classList.contains('done'))return;slider.classList.add('done');knob.style.left=maxLeft+'px';respond('enter');}
+  slider.addEventListener('touchstart',function(e){start(e.touches[0].clientX);},{passive:true});
+  slider.addEventListener('touchmove',function(e){move(e.touches[0].clientX);},{passive:true});
+  slider.addEventListener('touchend',end);
+  slider.addEventListener('mousedown',function(e){start(e.clientX);e.preventDefault();});
+  window.addEventListener('mousemove',function(e){move(e.clientX);});
+  window.addEventListener('mouseup',end);
+  window.addEventListener('resize',measure);
+})();
+</script>
+</body></html>`
+}
+
+function escHtml(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
+}
+
+function startRemoteServer() {
+  if (remoteServer) return
+  remoteLanIp = discoverLanIp()
+  if (!remoteLanIp) { console.log('[remote] no LAN IP found, server not started'); return }
+  remoteServer = http.createServer((req, res) => {
+    const u = new URL(req.url, `http://${req.headers.host}`)
+    if (u.searchParams.get('t') !== remoteToken) { res.statusCode = 403; res.end('forbidden'); return }
+    if (req.method === 'GET' && u.pathname === '/') {
+      res.setHeader('Content-Type', 'text/html; charset=utf-8')
+      res.end(remoteControlPage())
+    } else if (req.method === 'POST' && u.pathname === '/respond') {
+      let body = ''
+      req.on('data', c => { body += c })
+      req.on('end', () => {
+        try {
+          const { action, text, project } = JSON.parse(body || '{}')
+          handleRemoteRespond(project || currentYellowProject, action, text)
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ ok: true }))
+        } catch (e) {
+          res.statusCode = 400; res.end(JSON.stringify({ ok: false, error: e.message }))
+        }
+      })
+    } else {
+      res.statusCode = 404; res.end('not found')
+    }
+  })
+  remoteServer.on('error', (e) => { console.error('[remote] server error:', e.message); remoteServer = null })
+  remoteServer.listen(REMOTE_PORT, remoteLanIp, () => {
+    console.log(`[remote] control page: ${getRemoteControlUrl()}`)
   })
 }
 
@@ -919,6 +1223,7 @@ function buildTrayMenu(currentTheme, currentStyle, selectedProject) {
               const state = fs.readFileSync(stateFile, 'utf-8').trim()
               if (['red', 'yellow', 'green'].includes(state)) {
                 mainWin.webContents.send('state-change', state, p)
+                onTrafficStateChange(state, p)  // 手机推送（Bark）
               }
             }
           } catch {}
@@ -1068,6 +1373,7 @@ function createWindow() {
           lastState = state
           mainWin.webContents.send('state-change', state, p)
           mainWin.webContents.send('project-change', p)
+          onTrafficStateChange(state, p)  // 手机推送（Bark）
           // Refresh tray menu
           const theme = readTheme()
           const style = readStyle()
@@ -1130,6 +1436,15 @@ function createWindow() {
     try { fs.writeFileSync(MUTE_FILE, muted ? 'true' : 'false') } catch {}
   })
 
+  // 倒计时归零提醒：发系统通知（silent，声音由前端蜂鸣负责）
+  ipcMain.handle('cd-alert', (_e, title, body) => {
+    if (Notification.isSupported()) {
+      const n = new Notification({ title: title || '⏰ 倒计时结束', body: body || '', silent: true })
+      n.show()
+      n.on('click', () => { if (mainWin) { mainWin.show(); mainWin.focus() } })
+    }
+  })
+
   ipcMain.on('set-window-height', (_, h) => {
     if (mainWin) mainWin.setSize(100, h)
   })
@@ -1141,6 +1456,30 @@ function createWindow() {
   })
 
   ipcMain.handle('get-style', () => readStyle())
+
+  // ---------- 手机推送（Bark）----------
+  ipcMain.handle('get-bark-config', () => getBarkConfig())
+  ipcMain.on('set-bark-config', (_, cfg) => setBarkConfig(cfg))
+  ipcMain.handle('get-remote-status', () => getRemoteStatus())
+  ipcMain.handle('test-bark', async () => {
+    const { key } = getBarkConfig()
+    if (!key) return { ok: false, error: '未配置 Bark Key' }
+    try {
+      const ok = await new Promise((resolve) => {
+        const { server } = getBarkConfig()
+        const url = `${server.replace(/\/+$/, '')}/${encodeURIComponent(key)}/${encodeURIComponent('🧪 测试推送')}/${encodeURIComponent('手机推送已连通')}`
+        const u = new URL(url)
+        const req = https.get({ hostname: u.hostname, path: u.pathname + u.search, headers: { 'Accept': 'application/json' }, timeout: 10000 }, (res) => {
+          let d = ''
+          res.on('data', (c) => { d += c })
+          res.on('end', () => { resolve(res.statusCode >= 200 && res.statusCode < 300) })
+        })
+        req.on('error', () => resolve(false))
+        req.on('timeout', () => { req.destroy(); resolve(false) })
+      })
+      return ok ? { ok: true } : { ok: false, error: '推送请求失败，检查 Key / 服务器' }
+    } catch (e) { return { ok: false, error: e.message } }
+  })
 
   ipcMain.on('set-style', (_, style) => {
     try { fs.writeFileSync(STYLE_FILE, style) } catch {}
@@ -1362,9 +1701,11 @@ app.whenReady().then(() => {
   tray.setContextMenu(buildTrayMenu(theme, style, selectedProject))
 
   createWindow()
+  startRemoteServer()
 })
 
 app.on('will-quit', () => {
+  try { if (remoteServer) remoteServer.close() } catch {}
   try { fs.unlinkSync(PID_FILE) } catch {}
 })
 

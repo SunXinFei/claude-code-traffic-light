@@ -26,6 +26,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   activateHost: () => ipcRenderer.send('activate-host'),
   getMute: () => ipcRenderer.invoke('get-mute'),
   setMute: (muted) => ipcRenderer.send('set-mute', muted),
+  cdAlert: (title, body) => ipcRenderer.invoke('cd-alert', title, body),
   setWindowHeight: (h) => ipcRenderer.send('set-window-height', h),
   getProjects: () => ipcRenderer.invoke('get-projects'),
   getSelectedProject: () => ipcRenderer.invoke('get-selected-project'),
@@ -52,6 +53,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setVolcCredentials: (ak, sk) => ipcRenderer.send('set-volc-credentials', ak, sk),
   getSelectedProvider: () => ipcRenderer.invoke('get-selected-provider'),
   selectProvider: (p) => ipcRenderer.send('select-provider', p),
+
+  // 手机推送（Bark）
+  getBarkConfig: () => ipcRenderer.invoke('get-bark-config'),
+  setBarkConfig: (cfg) => ipcRenderer.send('set-bark-config', cfg),
+  testBark: () => ipcRenderer.invoke('test-bark'),
+  getRemoteStatus: () => ipcRenderer.invoke('get-remote-status'),
 
   // 多供应商余额查询（参考 cc-switch）
   providerList: () => ipcRenderer.invoke('provider-list'),
