@@ -390,6 +390,17 @@ function setBarkConfig(cfg) {
 let barkNotifiedProject = null
 // 当前黄灯项目（供手机控制页展示 + 回传时定位窗口）
 let currentYellowProject = null
+// 当前黄灯的确认内容（hook_capture.cjs 写入 .prompt 文件，这里读取）
+let currentPrompt = ''
+
+function readPromptForProject(project) {
+  if (!project) return ''
+  try {
+    const f = path.join(STATE_DIR, `${project}.prompt`)
+    if (fs.existsSync(f)) return fs.readFileSync(f, 'utf-8').trim()
+  } catch {}
+  return ''
+}
 
 function sendBarkNotification(title, body, openUrl) {
   const { key, server } = getBarkConfig()
@@ -410,15 +421,18 @@ function sendBarkNotification(title, body, openUrl) {
 function onTrafficStateChange(state, project) {
   if (state === 'yellow') {
     currentYellowProject = project
+    currentPrompt = readPromptForProject(project)
     if (barkNotifiedProject !== project) {
       barkNotifiedProject = project
       const p = project || 'Claude Code'
-      sendBarkNotification('🟡 Claude Code 等你确认', `${p} 需要你回来操作`, getRemoteControlUrl())
+      const body = currentPrompt ? `${p}：${currentPrompt}`.slice(0, 80) : `${p} 需要你回来操作`
+      sendBarkNotification('🟡 Claude Code 等你确认', body, getRemoteControlUrl())
     }
   } else {
     // 离开黄灯（变红/绿），清除标记，下次黄灯可再推
     barkNotifiedProject = null
     currentYellowProject = null
+    currentPrompt = ''
   }
 }
 
@@ -428,7 +442,20 @@ function onTrafficStateChange(state, project) {
 // 复用现有 activateHostApp 的跨平台窗口定位能力，只加「往激活窗口敲键」。
 
 const REMOTE_PORT = 37271
-const remoteToken = Math.random().toString(36).slice(2, 10)
+const REMOTE_TOKEN_FILE = path.join(STATE_DIR, 'remote_token')
+// token 落盘：重启后保持不变，外部脚本也能读到发推送
+function readOrCreateRemoteToken() {
+  try {
+    if (fs.existsSync(REMOTE_TOKEN_FILE)) {
+      const t = fs.readFileSync(REMOTE_TOKEN_FILE, 'utf-8').trim()
+      if (/^[a-z0-9]{6,16}$/i.test(t)) return t
+    }
+  } catch {}
+  const t = Math.random().toString(36).slice(2, 10)
+  try { fs.writeFileSync(REMOTE_TOKEN_FILE, t, 'utf-8') } catch {}
+  return t
+}
+const remoteToken = readOrCreateRemoteToken()
 let remoteLanIp = ''
 let remoteServer = null
 
@@ -498,13 +525,20 @@ function injectKeystrokes(action, text) {
 // 处理手机回传：激活窗口 + 敲键
 function handleRemoteRespond(project, action, text) {
   const target = project || currentYellowProject
+  if (action === 'focus') {
+    // 点卡片：只切到电脑对应窗口，不敲键
+    if (target) activateHostApp(target)
+    return
+  }
   if (target) activateHostApp(target)
   // 窗口置顶需要一点时间（mac osascript 内含 delay 0.4），稍候再敲键
   setTimeout(() => injectKeystrokes(action, text), process.platform === 'darwin' ? 500 : 300)
 }
 
 function remoteControlPage() {
-  const proj = escHtml(currentYellowProject || 'Claude Code')
+  const rawProj = currentYellowProject || ''
+  const proj = rawProj ? escHtml(rawProj) : ''
+  const prompt = currentPrompt ? escHtml(currentPrompt) : ''
   return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><title>Claude Code 等你确认</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
@@ -519,26 +553,28 @@ body{
   background-attachment:fixed;
   color:#fff;height:100vh;height:100dvh;
   display:flex;flex-direction:column;align-items:center;
-  padding:calc(env(safe-area-inset-top) + 20px) 20px calc(env(safe-area-inset-bottom) + 20px);
+  padding:calc(env(safe-area-inset-top) + 14px) 20px calc(env(safe-area-inset-bottom) + 20px);
 }
-/* 顶部区 + 中间卡片区可压缩 */
-.main{flex:1 1 auto;width:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:0;overflow:hidden}
-/* 项目名突出 */
-.proj-tag{font-size:12px;color:#7cffc7;font-weight:600;letter-spacing:1px;margin-bottom:10px;text-transform:uppercase}
-h1{font-size:30px;font-weight:700;text-align:center;letter-spacing:.5px}
-.sub{color:#d8e4ff;text-align:center;font-size:16px;margin-top:6px;word-break:break-all}
-.wait{text-align:center;color:#d8e4ff;margin:22px 0 22px;font-size:17px}
-/* 玻璃卡片 */
+/* 顶部区 + 中间卡片区：靠上分布，不垂直居中（避免顶部太空） */
+.main{flex:1 1 auto;width:100%;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;min-height:0;overflow:hidden;padding-top:8px}
+/* 项目名为主（大），Claude Code 为辅（小） */
+h1{font-size:15px;font-weight:600;text-align:center;color:#d8e4ff;letter-spacing:.3px;margin-bottom:6px}
+.proj{font-size:26px;font-weight:700;text-align:center;word-break:break-all;line-height:1.2}
+.wait{text-align:center;color:#d8e4ff;margin:18px 0 18px;font-size:16px}
+/* 玻璃卡片（可点击：点 = 切到电脑对应窗口） */
 .card{
-  width:100%;max-width:340px;padding:22px;border-radius:24px;
+  width:100%;max-width:340px;padding:20px;border-radius:24px;cursor:pointer;
   background:rgba(255,255,255,.10);border:1px solid rgba(255,255,255,.22);
   backdrop-filter:blur(30px) saturate(180%);-webkit-backdrop-filter:blur(30px) saturate(180%);
   box-shadow:inset 0 1px 0 rgba(255,255,255,.28),0 20px 50px rgba(0,0,0,.18);
+  transition:transform .15s,background .15s;
 }
-.title{color:#fff;font-weight:700;font-size:16px}
-.cmd{margin:14px 0;color:#fff;font-size:18px;font-weight:300;word-break:break-all}
-.detail{text-align:right;color:#f3f6ff;font-size:14px;cursor:pointer}
+.card:active{transform:scale(0.97);background:rgba(255,255,255,.16)}
+.title{color:#fff;font-weight:700;font-size:15px}
+.cmd{margin:12px 0;color:#fff;font-size:16px;font-weight:300;word-break:break-all;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;line-height:1.4}
 /* 更多操作 */
+.more-toggle{margin-top:14px;color:#d8e4ff;font-size:13px;cursor:pointer;opacity:.7;text-decoration:underline}
+.more-toggle:active{opacity:1}
 .more{display:none;width:100%;max-width:340px;margin-top:14px;max-height:40vh;overflow-y:auto;-webkit-overflow-scrolling:touch}
 .more.show{display:block;animation:up .25s ease}
 @keyframes up{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:none}}
@@ -553,14 +589,28 @@ input:focus{border-color:#7cffc7}
 .bottom{width:100%;max-width:340px;flex-shrink:0;padding-top:16px}
 .decline{text-align:center;color:#fff;font-weight:600;margin-bottom:14px;cursor:pointer;padding:8px;opacity:.85}
 .slider{
-  height:62px;border-radius:31px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.18);
-  position:relative;overflow:hidden;backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);touch-action:none;
+  height:76px;border-radius:38px;background:#0b1630;
+  position:relative;overflow:hidden;padding:4px;touch-action:none;
 }
-.slider:after{content:'';position:absolute;right:-20px;top:-10px;width:140px;height:80px;background:radial-gradient(circle,rgba(126,255,92,.9),rgba(126,255,92,.15) 55%,transparent 70%);pointer-events:none}
-.slider.done{background:rgba(126,255,92,.9);border-color:rgba(126,255,92,.9)}
-.slider.done:after{display:none}
-.knob{position:absolute;left:4px;top:4px;width:54px;height:54px;border-radius:50%;background:#fff;display:flex;align-items:center;justify-content:center;font-size:20px;color:#0b1630;z-index:2;box-shadow:0 6px 16px rgba(0,0,0,.25)}
-.lbl{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;z-index:1;font-size:15px}
+/* 光带层：conic 铺满整个 slider 并旋转 */
+.slider::before{
+  content:'';position:absolute;inset:0;z-index:0;pointer-events:none;
+  background:conic-gradient(from 0deg,transparent 0deg,rgba(126,255,92,0) 240deg,rgba(126,255,92,.9) 320deg,rgba(126,255,92,0) 360deg);
+  animation:flow 3s linear infinite;
+}
+@keyframes flow{to{transform:rotate(360deg)}}
+/* 内层轨道：绝对不透明，盖死中间光带，只留 4px 边框光环 */
+.track{position:relative;height:100%;border-radius:34px;background:#14253f;z-index:1;overflow:hidden}
+.slider.done{background:rgba(126,255,92,.9)}
+.slider.done::before{display:none}
+/* 滑动成功后半透明绿色光环呼吸 */
+.slider.done-glow{box-shadow:0 0 0 0 rgba(126,255,92,.6);animation:doneGlow 1.6s ease-out}
+@keyframes doneGlow{
+  0%{box-shadow:0 0 0 0 rgba(126,255,92,.6),0 0 30px 0 rgba(126,255,92,.5)}
+  100%{box-shadow:0 0 0 24px rgba(126,255,92,0),0 0 30px 0 rgba(126,255,92,0)}
+}
+.knob{position:absolute;left:4px;top:4px;width:64px;height:64px;border-radius:50%;background:#fff;display:flex;align-items:center;justify-content:center;font-size:24px;color:#0b1630;z-index:3;box-shadow:0 6px 16px rgba(0,0,0,.25)}
+.lbl{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;z-index:2;font-size:16px}
 .slider.done .lbl{color:#0b1630}
 .slider.done .knob{display:none}
 /* 发送成功遮罩 */
@@ -571,18 +621,16 @@ input:focus{border-color:#7cffc7}
 .sent p{font-size:18px;color:#fff;font-weight:600}
 </style></head><body>
 <div class="main">
-  <div class="proj-tag">${proj.toUpperCase()}</div>
   <h1>Claude Code</h1>
-  <div class="sub">${proj}</div>
+  ${proj ? `<div class="proj">${proj}</div>` : ''}
   <div class="wait">等你确认</div>
-  <div class="card">
+  <div class="card" onclick="respond('focus')">
     <div class="title">权限请求</div>
-    <div class="cmd">Claude 需要你回来操作</div>
-    <div class="detail" onclick="toggle()">查看更多操作 ›</div>
+    <div class="cmd">${prompt || 'Claude 需要你回来操作'}</div>
   </div>
+  <div class="more-toggle" onclick="toggle()">其他回应</div>
   <div class="more" id="more">
     <button class="btn b-yes" onclick="respond('yes')">✓ 同意 (y)</button>
-    <button class="btn b-no" onclick="respond('no')">✗ 拒绝 (n)</button>
     <input id="txt" placeholder="输入文字后发送（回车）">
     <button class="btn b-send" onclick="respond('text')">发送文字</button>
   </div>
@@ -590,8 +638,10 @@ input:focus{border-color:#7cffc7}
 <div class="bottom">
   <div class="decline" onclick="respond('no')">拒绝</div>
   <div class="slider" id="slider">
-    <div class="knob">›</div>
-    <div class="lbl">滑动批准（回车）</div>
+    <div class="track">
+      <div class="knob" id="knob">›</div>
+      <div class="lbl">滑动批准（回车）</div>
+    </div>
   </div>
 </div>
 <div class="sent" id="sent"><div class="ok">✓</div><p id="sentTxt">已发送</p></div>
@@ -601,7 +651,7 @@ function respond(action){
   var text=action==='text'?document.getElementById('txt').value:'';
   fetch('/respond?t=${remoteToken}',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:action,text:text})})
    .then(function(r){return r.json()})
-   .then(function(d){showSent(d.ok?'已发送':'发送失败');})
+   .then(function(d){showSent(d.ok?(action==='focus'?'已切到电脑':'已发送'):'操作失败');})
    .catch(function(){showSent('网络错误');});
 }
 function showSent(t){var s=document.getElementById('sent');document.getElementById('sentTxt').textContent=t;s.classList.add('show');}
@@ -613,7 +663,7 @@ function showSent(t){var s=document.getElementById('sent');document.getElementBy
   function start(x){if(slider.classList.contains('done'))return;measure();dragging=true;startX=x;startLeft=knob.offsetLeft;knob.style.transition='none';}
   function move(x){if(!dragging)return;var left=Math.max(4,Math.min(maxLeft,startLeft+(x-startX)));knob.style.left=left+'px';if(left>=maxLeft*0.7)done();}
   function end(){if(!dragging)return;dragging=false;knob.style.transition='left .2s';if(!slider.classList.contains('done'))knob.style.left='4px';}
-  function done(){if(slider.classList.contains('done'))return;slider.classList.add('done');knob.style.left=maxLeft+'px';respond('enter');}
+  function done(){if(slider.classList.contains('done'))return;slider.classList.add('done');slider.classList.add('done-glow');knob.style.left=maxLeft+'px';respond('enter');}
   slider.addEventListener('touchstart',function(e){start(e.touches[0].clientX);},{passive:true});
   slider.addEventListener('touchmove',function(e){move(e.touches[0].clientX);},{passive:true});
   slider.addEventListener('touchend',end);
@@ -1055,10 +1105,28 @@ function setupClaudeHooks() {
   // SessionEnd: clean up project files
   const sessionEndCmd = () => {
     if (isWin) {
-      return `for %F in ("%CLAUDE_PROJECT_DIR%") do @del /q "%USERPROFILE%\\.claude\\traffic_light\\%~nxF.state" "%USERPROFILE%\\.claude\\traffic_light\\%~nxF.dir" "%USERPROFILE%\\.claude\\traffic_light\\%~nxF.app" 2>nul & REM ${TRAFFIC_MARKER}`
+      return `for %F in ("%CLAUDE_PROJECT_DIR%") do @del /q "%USERPROFILE%\\.claude\\traffic_light\\%~nxF.state" "%USERPROFILE%\\.claude\\traffic_light\\%~nxF.dir" "%USERPROFILE%\\.claude\\traffic_light\\%~nxF.app" "%USERPROFILE%\\.claude\\traffic_light\\%~nxF.prompt" "%USERPROFILE%\\.claude\\traffic_light\\%~nxF.prompt.json" 2>nul & REM ${TRAFFIC_MARKER}`
     }
-    return `project=$(basename "$\{CLAUDE_PROJECT_DIR:-$PWD}") && rm -f ${STATE_DIR}/"$project".state ${STATE_DIR}/"$project".dir ${STATE_DIR}/"$project".app # ${TRAFFIC_MARKER}`
+    return `project=$(basename "$\{CLAUDE_PROJECT_DIR:-$PWD}") && rm -f ${STATE_DIR}/"$project".state ${STATE_DIR}/"$project".dir ${STATE_DIR}/"$project".app ${STATE_DIR}/"$project".prompt ${STATE_DIR}/"$project".prompt.json # ${TRAFFIC_MARKER}`
   }
+
+  // 黄灯时抓取 Claude 要确认的内容（stdin JSON -> hook_capture.cjs -> .prompt 文件）
+  const captureScript = path.join(__dirname, 'hook_capture.cjs')
+  const captureCmd = isWin
+    ? `set "CC_TL_STATE_DIR=${STATE_DIR}" & set "CC_TL_PROJECT=%CLAUDE_PROJECT_DIR%" & node "${captureScript}"`
+    : `CC_TL_STATE_DIR=${STATE_DIR} CC_TL_PROJECT="$\{CLAUDE_PROJECT_DIR:-$PWD}" node "${captureScript}"`
+
+  // 去掉 projectCmd 末尾的注释（# traffic_light_app / REM traffic_light_app），
+  // 否则后续 && captureCmd 会被当成注释吃掉。
+  // projectCmd 末尾的 shell 注释（mac: # / win: & REM）会吃掉后续命令
+  const macRe = / # traffic_light_app$/
+  const winRe = / & REM traffic_light_app$/
+  const popen = (color) => {
+    const raw = projectCmd(color)
+    return macRe.test(raw) ? raw.replace(macRe, '') : raw.replace(winRe, '')
+  }
+  // 带 capture 的黄灯命令 = projectCmd + capture + 恢复注释标记
+  const yellowCaptureCmd = (color) => `${popen(color)} && ${captureCmd}  # ${TRAFFIC_MARKER}`
 
   // Tool execution = red. Yellow fires on PermissionRequest (auth dialog) and AskUserQuestion.
   const PERMISSION_TOOLS = 'Bash|Write|Edit|Read|NotebookEdit|WebFetch|mcp__'
@@ -1071,13 +1139,13 @@ function setupClaudeHooks() {
     { event: 'StopFailure',      command: stateCmd('green') },
     { event: 'StopFailure',      command: projectCmd('green') },
     { event: 'PreToolUse',       matcher: 'AskUserQuestion', command: stateCmd('yellow') },
-    { event: 'PreToolUse',       matcher: 'AskUserQuestion', command: projectCmd('yellow') },
+    { event: 'PreToolUse',       matcher: 'AskUserQuestion', command: yellowCaptureCmd('yellow') },
     { event: 'PreToolUse',       matcher: PERMISSION_TOOLS, command: stateCmd('red') },
     { event: 'PreToolUse',       matcher: PERMISSION_TOOLS, command: projectCmd('red') },
     { event: 'PostToolUse',      matcher: PERMISSION_TOOLS, command: stateCmd('red') },
     { event: 'PostToolUse',      matcher: PERMISSION_TOOLS, command: projectCmd('red') },
     { event: 'PermissionRequest', command: stateCmd('yellow') },
-    { event: 'PermissionRequest', command: projectCmd('yellow') },
+    { event: 'PermissionRequest', command: yellowCaptureCmd('yellow') },
     { event: 'SessionEnd',       command: sessionEndCmd() },
   ]
 
