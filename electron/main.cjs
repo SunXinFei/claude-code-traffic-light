@@ -1111,7 +1111,8 @@ function setupClaudeHooks() {
   }
 
   // 黄灯时抓取 Claude 要确认的内容（stdin JSON -> hook_capture.cjs -> .prompt 文件）
-  const captureScript = path.join(__dirname, 'hook_capture.cjs')
+  // 脚本复制到 STATE_DIR，避免 ASAR 打包后外部 node 读不到
+  const captureScript = path.join(STATE_DIR, 'hook_capture.cjs')
   const captureCmd = isWin
     ? `set "CC_TL_STATE_DIR=${STATE_DIR}" & set "CC_TL_PROJECT=%CLAUDE_PROJECT_DIR%" & node "${captureScript}"`
     : `CC_TL_STATE_DIR=${STATE_DIR} CC_TL_PROJECT="$\{CLAUDE_PROJECT_DIR:-$PWD}" node "${captureScript}"`
@@ -1746,6 +1747,13 @@ function detectRunningSessions() {
 
 app.whenReady().then(() => {
   try { fs.mkdirSync(STATE_DIR, { recursive: true }) } catch {}
+
+  // 复制 hook_capture.cjs 到 STATE_DIR，避免生产版本 ASAR 打包后外部 node 读不到
+  try {
+    const src = path.join(__dirname, 'hook_capture.cjs')
+    const dst = path.join(STATE_DIR, 'hook_capture.cjs')
+    fs.copyFileSync(src, dst)
+  } catch (e) { console.error('[hook] copy capture script failed:', e.message) }
 
   if (process.platform !== 'win32') {
     require('child_process').exec("pkill -f 'traffic_light.py'")
