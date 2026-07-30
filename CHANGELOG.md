@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+## [2.2.1] - 2026-07-30
+
+### 修复
+
+- hook_capture 读取推送信息：description 优先（人类可读摘要）、STATE_DIR 统一、basename 处理
+
 ## [2.2.0] - 2026-07-28
 
 ### 新增
