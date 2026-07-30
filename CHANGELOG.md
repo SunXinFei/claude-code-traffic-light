@@ -20,8 +20,10 @@
   - 点「权限请求」卡片可切到电脑对应项目窗口
   - 本地 HTTP 服务（零依赖，nodenv 随机 token 鉴权），支持 macOS keystroke / Windows SendKeys 敲键注入
   - scroll 自适配（100dvh 无滚动条），Bark 推送通知带局域网控制页直链
-- **Hook 抓取确认内容** - 新增 `hook_capture.cjs`，黄灯时读 Claude stdin JSON 提取待确认内容（命令/问题/文件路径），写入 `.prompt` 文件供推送与控制页展示
-  - 控制页卡片展示真实内容（如 `$ npm install`），最多 3 行超出省略号，无内容时兜底占位
+- **Hook 抓取确认内容** - 新增 `hook_capture.cjs`，黄灯时读 Claude stdin JSON 提取待确认内容写入 `.prompt` 文件供推送与控制页展示
+  - content 优先取 Claude 的 `description`（人类可读摘要，如 "Create utility module"），其次才用命令/文件路径
+  - STATE_DIR 统一为 `~/.claude/traffic_light`，project 名取 basename 防路径写入失败
+  - 控制页卡片最多 3 行超出省略号，无内容时兜底占位
 
 ### 优化
 

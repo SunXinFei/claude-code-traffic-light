@@ -16,9 +16,7 @@ const path = require('path')
 const os = require('os')
 
 const STATE_DIR = process.env.CC_TL_STATE_DIR
-  || (process.platform === 'win32'
-    ? path.join(os.homedir(), '.claude', 'traffic_light')
-    : '/tmp/cc_traffic_light')
+  || path.join(os.homedir(), '.claude', 'traffic_light')
 
 function readStdin() {
   return new Promise((resolve) => {
@@ -35,37 +33,41 @@ function pickPrompt(obj) {
   if (!obj || typeof obj !== 'object') return ''
   const tool = obj.tool_name || obj.tool || ''
   const input = obj.tool_input || obj.input || {}
+  // description 是 Claude 给的人类可读摘要，优先用
+  const desc = (typeof input.description === 'string' && input.description.trim())
+    || (typeof obj.description === 'string' && obj.description.trim())
+    || ''
 
-  // AskUserQuestion: tool_input.question 是问题文本
+  // AskUserQuestion: 问题文本
   if (tool === 'AskUserQuestion' && input.question) {
     return String(input.question)
   }
 
-  // Bash: tool_input.command
+  // Bash: 有 description 就用它，否则截取命令
   if (input && input.command) {
-    return `$ ${input.command}`
+    if (desc) return desc
+    const cmd = String(input.command).split('\n')[0].trim()
+    return cmd.length > 60 ? '$ ' + cmd.slice(0, 60) + '…' : '$ ' + cmd
   }
 
-  // Write/Edit: tool_input.file_path
+  // Write/Edit: description 优先，否则显示文件名
   if (input && input.file_path) {
-    const op = tool || 'Edit'
-    return `${op}: ${input.file_path}`
+    if (desc) return desc
+    const filename = require('path').basename(String(input.file_path))
+    return `${tool}: ${filename}`
   }
 
-  // 通用：tool_input 里若有 description / prompt / message
+  // 通用兜底：各种可能字段
+  if (desc) return desc
   if (input) {
-    for (const k of ['description', 'prompt', 'message', 'content', 'query']) {
+    for (const k of ['prompt', 'message', 'content', 'query']) {
       if (typeof input[k] === 'string' && input[k].trim()) return input[k]
     }
   }
-
-  // 兜底：permission 对象
   if (obj.permission && typeof obj.permission === 'object') {
     const p = obj.permission
     if (p.tool) return `${p.tool}`
   }
-
-  // 最后兜底：tool_name
   return tool || ''
 }
 
@@ -79,8 +81,8 @@ async function main() {
   let obj = {}
   try { obj = JSON.parse(raw) } catch {}
 
-  const project = process.env.CC_TL_PROJECT
-    || path.basename(process.env.CLAUDE_PROJECT_DIR || process.cwd())
+  const project = path.basename(process.env.CC_TL_PROJECT
+    || process.env.CLAUDE_PROJECT_DIR || process.cwd())
 
   const prompt = truncate(pickPrompt(obj))
 
