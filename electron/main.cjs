@@ -384,6 +384,8 @@ function setBarkConfig(cfg) {
     keys._bark = {}
   }
   writeApiKeys(keys)
+  syncRemoteApproveFlag()  // Bark Key 有无 -> 同步 hook 自动批准标记
+  startRemoteServer()      // 确保控制页服务可用
 }
 
 // 已为某项目推过黄灯，避免重复推。状态离开 yellow 后清除，下次再亮黄灯才再推。
@@ -392,6 +394,9 @@ let barkNotifiedProject = null
 let currentYellowProject = null
 // 当前黄灯的确认内容（hook_capture.cjs 写入 .prompt 文件，这里读取）
 let currentPrompt = ''
+// 当前黄灯的待确认请求（hook_capture.cjs 写入 .pending：{id,type,tool,prompt,ts}）
+// type=permission -> 滑动写 .approved 信号让 hook 返回 allow/deny；type=question -> 走注入
+let currentYellowRequest = null
 
 function readPromptForProject(project) {
   if (!project) return ''
@@ -400,6 +405,27 @@ function readPromptForProject(project) {
     if (fs.existsSync(f)) return fs.readFileSync(f, 'utf-8').trim()
   } catch {}
   return ''
+}
+
+// 读 .pending 信号 -> {id,type,tool,prompt,ts}；hook_capture.cjs 在 PermissionRequest/AskUserQuestion 时写
+function readPendingRequest(project) {
+  if (!project) return null
+  try {
+    const f = path.join(STATE_DIR, `${project}.pending`)
+    if (fs.existsSync(f)) {
+      const obj = JSON.parse(fs.readFileSync(f, 'utf-8'))
+      if (obj && obj.id) return obj
+    }
+  } catch {}
+  return null
+}
+
+// 写 .approved 信号：hook_capture.cjs 轮询到匹配 id 后返回 allow/deny 给 Claude
+function writeApproved(project, id, behavior) {
+  if (!project || !id) return
+  try {
+    fs.writeFileSync(path.join(STATE_DIR, `${project}.approved`), JSON.stringify({ id, behavior }), 'utf-8')
+  } catch {}
 }
 
 function sendBarkNotification(title, body, openUrl) {
@@ -422,6 +448,13 @@ function onTrafficStateChange(state, project) {
   if (state === 'yellow') {
     currentYellowProject = project
     currentPrompt = readPromptForProject(project)
+    currentYellowRequest = readPendingRequest(project)
+    // hook 写 .state 后才写 .pending，有微小时序差；稍后重读兜底
+    setTimeout(() => {
+      if (currentYellowProject === project && (!currentYellowRequest || !currentYellowRequest.id)) {
+        currentYellowRequest = readPendingRequest(project)
+      }
+    }, 250)
     if (barkNotifiedProject !== project) {
       barkNotifiedProject = project
       const p = project || 'Claude Code'
@@ -433,6 +466,7 @@ function onTrafficStateChange(state, project) {
     barkNotifiedProject = null
     currentYellowProject = null
     currentPrompt = ''
+    currentYellowRequest = null
   }
 }
 
@@ -443,6 +477,8 @@ function onTrafficStateChange(state, project) {
 
 const REMOTE_PORT = 37271
 const REMOTE_TOKEN_FILE = path.join(STATE_DIR, 'remote_token')
+// 「Hook 自动批准」开关标记：存在=开启。hook_capture.cjs 启动时检查，不存在则立即放行不阻塞
+const REMOTE_APPROVE_ENABLED_FILE = path.join(STATE_DIR, 'remote_approve.enabled')
 // token 落盘：重启后保持不变，外部脚本也能读到发推送
 function readOrCreateRemoteToken() {
   try {
@@ -477,7 +513,25 @@ function getRemoteControlUrl() {
 }
 
 function getRemoteStatus() {
-  return { url: getRemoteControlUrl(), running: !!remoteServer, port: REMOTE_PORT }
+  return { url: getRemoteControlUrl(), running: !!remoteServer, port: REMOTE_PORT, approve: isRemoteApproveEnabled() }
+}
+
+function isRemoteApproveEnabled() {
+  try { return fs.existsSync(REMOTE_APPROVE_ENABLED_FILE) } catch { return false }
+}
+
+// 同步「Hook 自动批准」标记：有 Bark Key = 开启（写标记）；无 = 关闭（删标记）
+// hook_capture.cjs 检查此标记决定是否阻塞等滑动。配了 Bark = 要远程确认 = 自动启用
+function syncRemoteApproveFlag() {
+  try {
+    const { key } = getBarkConfig()
+    if (key) {
+      fs.mkdirSync(STATE_DIR, { recursive: true })
+      fs.writeFileSync(REMOTE_APPROVE_ENABLED_FILE, '1')
+    } else {
+      try { fs.unlinkSync(REMOTE_APPROVE_ENABLED_FILE) } catch {}
+    }
+  } catch {}
 }
 
 // 敲键注入：mac 用 System Events keystroke（需辅助功能权限，与窗口激活同权限）；
@@ -522,7 +576,7 @@ function injectKeystrokes(action, text) {
   }
 }
 
-// 处理手机回传：激活窗口 + 敲键
+// 处理手机回传：权限请求 -> 写 .approved 信号让 hook 返回 allow/deny；AskUserQuestion -> 激活窗口+敲键
 function handleRemoteRespond(project, action, text) {
   const target = project || currentYellowProject
   if (action === 'focus') {
@@ -530,9 +584,19 @@ function handleRemoteRespond(project, action, text) {
     if (target) activateHostApp(target)
     return
   }
+  // 权限请求：写 .approved 信号，hook_capture.cjs 轮询到后返回 allow/deny 给 Claude（不碰控制台）
+  let req = currentYellowRequest
+  if (!req || !req.id) req = readPendingRequest(target)  // 兜底：pending 晚到
+  if (req && req.type === 'permission') {
+    const behavior = (action === 'no' || action === 'deny') ? 'deny' : 'allow'
+    writeApproved(target, req.id, behavior)
+    return
+  }
+  // AskUserQuestion / 其它：激活窗口 + 敲键注入（无 hook 能替用户回答问题，保持现状）
   if (target) activateHostApp(target)
   // 窗口置顶需要一点时间（mac osascript 内含 delay 0.4），稍候再敲键
-  setTimeout(() => injectKeystrokes(action, text), process.platform === 'darwin' ? 500 : 300)
+  const keyAction = (action === 'approve') ? 'enter' : action  // approve/enter 统一当回车（提交默认）
+  setTimeout(() => injectKeystrokes(keyAction, text), process.platform === 'darwin' ? 500 : 300)
 }
 
 function remoteControlPage() {
@@ -640,7 +704,7 @@ input:focus{border-color:#7cffc7}
   <div class="slider" id="slider">
     <div class="track">
       <div class="knob" id="knob">›</div>
-      <div class="lbl">滑动批准（回车）</div>
+      <div class="lbl">滑动批准</div>
     </div>
   </div>
 </div>
@@ -663,7 +727,7 @@ function showSent(t){var s=document.getElementById('sent');document.getElementBy
   function start(x){if(slider.classList.contains('done'))return;measure();dragging=true;startX=x;startLeft=knob.offsetLeft;knob.style.transition='none';}
   function move(x){if(!dragging)return;var left=Math.max(4,Math.min(maxLeft,startLeft+(x-startX)));knob.style.left=left+'px';if(left>=maxLeft*0.7)done();}
   function end(){if(!dragging)return;dragging=false;knob.style.transition='left .2s';if(!slider.classList.contains('done'))knob.style.left='4px';}
-  function done(){if(slider.classList.contains('done'))return;slider.classList.add('done');slider.classList.add('done-glow');knob.style.left=maxLeft+'px';respond('enter');}
+  function done(){if(slider.classList.contains('done'))return;slider.classList.add('done');slider.classList.add('done-glow');knob.style.left=maxLeft+'px';respond('approve');}
   slider.addEventListener('touchstart',function(e){start(e.touches[0].clientX);},{passive:true});
   slider.addEventListener('touchmove',function(e){move(e.touches[0].clientX);},{passive:true});
   slider.addEventListener('touchend',end);
@@ -682,8 +746,7 @@ function escHtml(s) {
 
 function startRemoteServer() {
   if (remoteServer) return
-  remoteLanIp = discoverLanIp()
-  if (!remoteLanIp) { console.log('[remote] no LAN IP found, server not started'); return }
+  remoteLanIp = discoverLanIp()  // 可能为空（纯本机）：手机推送无直链，但本机 127.0.0.1 仍可用
   remoteServer = http.createServer((req, res) => {
     const u = new URL(req.url, `http://${req.headers.host}`)
     if (u.searchParams.get('t') !== remoteToken) { res.statusCode = 403; res.end('forbidden'); return }
@@ -708,8 +771,9 @@ function startRemoteServer() {
     }
   })
   remoteServer.on('error', (e) => { console.error('[remote] server error:', e.message); remoteServer = null })
-  remoteServer.listen(REMOTE_PORT, remoteLanIp, () => {
-    console.log(`[remote] control page: ${getRemoteControlUrl()}`)
+  // 监听所有接口：手机走 LAN IP，本机浏览器走 127.0.0.1（"本地页面"滑动）
+  remoteServer.listen(REMOTE_PORT, () => {
+    console.log(`[remote] control page: ${getRemoteControlUrl() || `http://127.0.0.1:${REMOTE_PORT}/?t=${remoteToken}`}`)
   })
 }
 
@@ -1146,7 +1210,7 @@ function setupClaudeHooks() {
     { event: 'PostToolUse',      matcher: PERMISSION_TOOLS, command: stateCmd('red') },
     { event: 'PostToolUse',      matcher: PERMISSION_TOOLS, command: projectCmd('red') },
     { event: 'PermissionRequest', command: stateCmd('yellow') },
-    { event: 'PermissionRequest', command: yellowCaptureCmd('yellow') },
+    { event: 'PermissionRequest', command: yellowCaptureCmd('yellow'), timeout: 300 },
     { event: 'SessionEnd',       command: sessionEndCmd() },
   ]
 
@@ -1182,9 +1246,11 @@ function setupClaudeHooks() {
     if (settings.hooks[event].length === 0) delete settings.hooks[event]
   }
 
-  for (const { event, matcher, command } of HOOKS_TO_ADD) {
+  for (const { event, matcher, command, timeout } of HOOKS_TO_ADD) {
     if (!Array.isArray(settings.hooks[event])) settings.hooks[event] = []
-    const entry = { hooks: [{ type: 'command', command }] }
+    const handler = { type: 'command', command }
+    if (timeout) handler.timeout = timeout  // 秒：PermissionRequest 阻塞等待滑动的上限
+    const entry = { hooks: [handler] }
     if (matcher) entry.matcher = matcher
     settings.hooks[event].push(entry)
     changed = true
@@ -1762,6 +1828,7 @@ app.whenReady().then(() => {
   detectRunningSessions()
   setupClaudeHooks()
   providers.ensureDefaultProviders()
+  syncRemoteApproveFlag()  // 启动时按 Bark Key 有无同步 hook 自动批准标记
 
   try { fs.writeFileSync(PID_FILE, process.pid.toString()) } catch {}
 

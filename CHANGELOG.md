@@ -4,6 +4,19 @@
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-07-31
+
+### 新增
+
+- **滑动批准改用 Hook 自动确认** - Claude 权限请求（写文件等）不再弹控制台提示，填入 Bark Key 即自动启用，在本地/手机控制页滑动批准后 Claude 直接执行工具（显示 "Allowed by PermissionRequest hook"）。替代原来的模拟键盘回车注入，多 Claude 对话并行时无需逐个找 session 按 yes。
+  - 原理：`PermissionRequest` hook 返回 `allow` 抑制控制台权限提示；信号协议 hook 写 `.pending` -> 主进程推送/控制页展示 -> 滑动写 `.approved` -> hook 返回 allow/deny
+  - 本机浏览器 `http://127.0.0.1:37271` 可滑动（不必手机）；最多等 290s 超时回退控制台手动确认
+  - AskUserQuestion 仍走文字注入（无 hook 能替用户回答）；Bash 已被 rtk 放行不在此列
+
+### 变更
+
+- 去掉「滑动批准」手动开关，改为填 Bark Key 即启用（配了 Bark = 要远程确认 = 自动启用）
+
 ## [2.2.1] - 2026-07-30
 
 ### 修复
