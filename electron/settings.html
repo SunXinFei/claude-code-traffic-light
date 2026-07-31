@@ -89,6 +89,8 @@
     }
     .btn-secondary:hover { background: rgba(255,255,255,0.12); }
     .btn-sm { padding: 6px 10px; font-size: 11px; }
+    .push-tab { flex: 1; }
+    .push-tab.active { background: #30D158; color: white; }
     .balance-grid {
       display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
     }
@@ -312,33 +314,48 @@
 
   <div class="section" id="bark-section">
     <div class="section-header">
-      <div class="section-title">📱 手机推送（Bark）</div>
+      <div class="section-title">📱 手机推送</div>
     </div>
-    <div class="hint" style="margin-bottom:10px;">Claude 亮黄灯（等你确认）时推送一条到手机，手表会自动镜像手机通知。在 <a class="link" href="https://apps.apple.com/us/app/bark-push-notifications/id1403753865" target="_blank" rel="noopener">Bark App</a> 里复制你的专属 Key 填入即可。</div>
+    <div class="push-tabs" style="display:flex;gap:6px;margin-bottom:12px;">
+      <button class="btn btn-secondary btn-sm push-tab active" data-tab="ios" onclick="switchPushTab('ios')">iOS（Bark）</button>
+      <button class="btn btn-secondary btn-sm push-tab" data-tab="android" onclick="switchPushTab('android')">安卓（ntfy）</button>
+    </div>
 
-    <div class="field">
-      <div class="field-label">Bark Key</div>
-      <div class="field-row">
-        <input type="text" id="bark-key" placeholder="例如 abCdEfGh1234">
+    <div id="push-ios" class="push-panel">
+      <div class="hint" style="margin-bottom:10px;">Claude 亮黄灯时推送一条到 iPhone，手表会自动镜像通知。在 <a class="link" href="https://apps.apple.com/us/app/bark-push-notifications/id1403753865" target="_blank" rel="noopener">Bark App</a> 里复制专属 Key 填入即可。</div>
+      <div class="field">
+        <div class="field-label">Bark Key</div>
+        <div class="field-row"><input type="text" id="bark-key" placeholder="例如 abCdEfGh1234"></div>
       </div>
-    </div>
-
-    <div class="field">
-      <div class="field-label">服务器（留空用官方 https://api.day.app，可填自建地址）</div>
-      <div class="field-row">
-        <input type="text" id="bark-server" placeholder="https://api.day.app">
+      <div class="field">
+        <div class="field-label">服务器（留空用官方 https://api.day.app，可填自建地址）</div>
+        <div class="field-row"><input type="text" id="bark-server" placeholder="https://api.day.app"></div>
       </div>
+      <div class="actions">
+        <button class="btn btn-primary btn-sm" onclick="saveBark()">保存</button>
+        <button class="btn btn-secondary btn-sm" onclick="testBark()">测试推送</button>
+      </div>
+      <div id="bark-result" class="result-panel"></div>
     </div>
 
-    <div id="remote-status" style="font-size:11px;color:rgba(255,255,255,0.5);margin-bottom:8px;line-height:1.5;"></div>
-
-    <div class="actions">
-      <button class="btn btn-primary btn-sm" onclick="saveBark()">保存</button>
-      <button class="btn btn-secondary btn-sm" onclick="testBark()">测试推送</button>
+    <div id="push-android" class="push-panel" style="display:none">
+      <div class="hint" style="margin-bottom:10px;">Claude 亮黄灯时推送一条到安卓手机。装 <a class="link" href="https://f-droid.org/packages/io.heckel.ntfy/" target="_blank" rel="noopener">ntfy</a>（F-Droid / Google Play / <a class="link" href="https://ntfy.sh" target="_blank" rel="noopener">ntfy.sh</a>），在 app 里订阅同名 Topic 即可收到通知，点通知打开控制页。</div>
+      <div class="field">
+        <div class="field-label">ntfy Topic（自己起名，手机 app 订阅同名）</div>
+        <div class="field-row"><input type="text" id="ntfy-topic" placeholder="例如 claude-light-abc123"></div>
+      </div>
+      <div class="field">
+        <div class="field-label">服务器（留空用官方 https://ntfy.sh，可填自建地址）</div>
+        <div class="field-row"><input type="text" id="ntfy-server" placeholder="https://ntfy.sh"></div>
+      </div>
+      <div class="actions">
+        <button class="btn btn-primary btn-sm" onclick="saveNtfy()">保存</button>
+        <button class="btn btn-secondary btn-sm" onclick="testNtfy()">测试推送</button>
+      </div>
+      <div id="ntfy-result" class="result-panel"></div>
     </div>
 
-    <div id="bark-result" class="result-panel"></div>
-    <div class="hint" style="margin-top:10px;font-size:11px;line-height:1.5;">填入 Bark Key 即启用「滑动批准」：Claude 权限请求（写文件等）不再弹控制台，在此控制页滑动批准后直接执行（最多等 5 分钟，超时回退控制台）。Bash 已被 rtk 放行不在此列。</div>
+    <div class="hint" style="margin-top:10px;font-size:11px;line-height:1.5;">填入 Bark Key 或 ntfy Topic 即启用「滑动批准」：Claude 权限请求（写文件等）不再弹控制台，点推送通知打开控制页滑动批准后直接执行（最多等 5 分钟，超时回退控制台）。Bash 已被 rtk 放行不在此列。</div>
   </div>
 
   <script>
@@ -371,6 +388,7 @@
       await loadCodingPlanProviderUI(curCodingPlanId)
       updateBadges(selected)
       loadBark()
+      loadNtfy()
       loadBalance()
     }
 
@@ -379,10 +397,6 @@
         const cfg = await window.electronAPI.getBarkConfig()
         document.getElementById('bark-key').value = cfg.key || ''
         document.getElementById('bark-server').value = (cfg.server && cfg.server !== 'https://api.day.app') ? cfg.server : ''
-        const rs = await window.electronAPI.getRemoteStatus()
-        const el = document.getElementById('remote-status')
-        if (rs && rs.url) el.innerHTML = '📲 手机回传控制页（点通知自动打开，或手机浏览器访问）：<br><a class="link" href="' + rs.url + '" target="_blank" rel="noopener">' + rs.url + '</a><br><span style="color:rgba(255,255,255,0.3)">需手机与电脑同一 WiFi</span>'
-        else if (rs) el.textContent = '📲 手机回传：未检测到局域网 IP，服务未启动'
       } catch {}
     }
 
@@ -397,6 +411,35 @@
       const el = document.getElementById('bark-result')
       el.innerHTML = '<div class="hint">推送中...</div>'
       const r = await window.electronAPI.testBark()
+      if (r && r.ok) el.innerHTML = '<div class="hint" style="color:#30D158">✓ 测试推送已发出，请查看手机</div>'
+      else el.innerHTML = `<div class="error-msg">${esc(r && r.error ? r.error : '推送失败')}</div>`
+    }
+
+    function switchPushTab(tab) {
+      document.getElementById('push-ios').style.display = tab === 'ios' ? '' : 'none'
+      document.getElementById('push-android').style.display = tab === 'android' ? '' : 'none'
+      document.querySelectorAll('#bark-section .push-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab))
+    }
+
+    async function loadNtfy() {
+      try {
+        const cfg = await window.electronAPI.getNtfyConfig()
+        document.getElementById('ntfy-topic').value = cfg.topic || ''
+        document.getElementById('ntfy-server').value = (cfg.server && cfg.server !== 'https://ntfy.sh') ? cfg.server : ''
+      } catch {}
+    }
+
+    async function saveNtfy() {
+      const topic = document.getElementById('ntfy-topic').value.trim()
+      const server = document.getElementById('ntfy-server').value.trim()
+      window.electronAPI.setNtfyConfig({ server, topic })
+      toast('已保存')
+    }
+
+    async function testNtfy() {
+      const el = document.getElementById('ntfy-result')
+      el.innerHTML = '<div class="hint">推送中...</div>'
+      const r = await window.electronAPI.testNtfy()
       if (r && r.ok) el.innerHTML = '<div class="hint" style="color:#30D158">✓ 测试推送已发出，请查看手机</div>'
       else el.innerHTML = `<div class="error-msg">${esc(r && r.error ? r.error : '推送失败')}</div>`
     }

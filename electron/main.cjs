@@ -388,6 +388,32 @@ function setBarkConfig(cfg) {
   startRemoteServer()      // 确保控制页服务可用
 }
 
+// ---------- 手机推送（ntfy，安卓）----------
+// ntfy: 开源跨平台推送，安卓用。POST {server}/{topic}，Title/Click headers。
+function getNtfyConfig() {
+  const keys = readApiKeys()
+  const n = keys._ntfy || {}
+  return {
+    topic: n.topic || '',
+    server: n.server || 'https://ntfy.sh',  // 默认官方，可自建
+    enabled: !!n.topic,
+  }
+}
+
+function setNtfyConfig(cfg) {
+  const keys = readApiKeys()
+  if (!keys._ntfy) keys._ntfy = {}
+  if (cfg && cfg.topic) {
+    keys._ntfy.topic = cfg.topic.trim()
+    keys._ntfy.server = (cfg.server || '').trim() || 'https://ntfy.sh'
+  } else {
+    keys._ntfy = {}
+  }
+  writeApiKeys(keys)
+  syncRemoteApproveFlag()  // ntfy Topic 有无 -> 同步 hook 自动批准标记
+  startRemoteServer()
+}
+
 // 已为某项目推过黄灯，避免重复推。状态离开 yellow 后清除，下次再亮黄灯才再推。
 let barkNotifiedProject = null
 // 当前黄灯项目（供手机控制页展示 + 回传时定位窗口）
@@ -443,6 +469,22 @@ function sendBarkNotification(title, body, openUrl) {
   } catch (e) { console.error('[bark] url error:', e.message) }
 }
 
+// ntfy 推送（安卓）：POST {server}/{topic}，Title/Click headers。点通知打开控制页
+function sendNtfyNotification(title, body, openUrl) {
+  const { topic, server } = getNtfyConfig()
+  if (!topic) return
+  const url = `${server.replace(/\/+$/, '')}/${encodeURIComponent(topic)}`
+  try {
+    const u = new URL(url)
+    const headers = { 'Title': title, 'Tags': 'warning,orange_circle' }
+    if (openUrl) headers['Click'] = openUrl  // 点通知打开此 URL（手机控制页）
+    const req = https.request({ hostname: u.hostname, path: u.pathname, method: 'POST', headers, timeout: 10000 }, (res) => { res.resume() })
+    req.on('error', (e) => console.error('[ntfy] push failed:', e.message))
+    req.write(body)
+    req.end()
+  } catch (e) { console.error('[ntfy] url error:', e.message) }
+}
+
 // 状态变化钩子：黄灯 -> 推送（带项目名 + 回传控制页 URL）；其它状态清除已推标记。
 function onTrafficStateChange(state, project) {
   if (state === 'yellow') {
@@ -459,7 +501,9 @@ function onTrafficStateChange(state, project) {
       barkNotifiedProject = project
       const p = project || 'Claude Code'
       const body = currentPrompt ? `${p}：${currentPrompt}`.slice(0, 80) : `${p} 需要你回来操作`
-      sendBarkNotification('🟡 Claude Code 等你确认', body, getRemoteControlUrl())
+      const ctlUrl = getRemoteControlUrl()
+      sendBarkNotification('🟡 Claude Code 等你确认', body, ctlUrl)
+      sendNtfyNotification('🟡 Claude Code 等你确认', body, ctlUrl)
     }
   } else {
     // 离开黄灯（变红/绿），清除标记，下次黄灯可再推
@@ -524,8 +568,9 @@ function isRemoteApproveEnabled() {
 // hook_capture.cjs 检查此标记决定是否阻塞等滑动。配了 Bark = 要远程确认 = 自动启用
 function syncRemoteApproveFlag() {
   try {
-    const { key } = getBarkConfig()
-    if (key) {
+    const { key: barkKey } = getBarkConfig()
+    const { topic: ntfyTopic } = getNtfyConfig()
+    if (barkKey || ntfyTopic) {  // 配了 Bark 或 ntfy 任一 -> 启用 hook 自动批准
       fs.mkdirSync(STATE_DIR, { recursive: true })
       fs.writeFileSync(REMOTE_APPROVE_ENABLED_FILE, '1')
     } else {
@@ -1596,6 +1641,27 @@ function createWindow() {
   ipcMain.handle('get-bark-config', () => getBarkConfig())
   ipcMain.on('set-bark-config', (_, cfg) => setBarkConfig(cfg))
   ipcMain.handle('get-remote-status', () => getRemoteStatus())
+  ipcMain.handle('get-ntfy-config', () => getNtfyConfig())
+  ipcMain.on('set-ntfy-config', (_, cfg) => setNtfyConfig(cfg))
+  ipcMain.handle('test-ntfy', async () => {
+    const { topic, server } = getNtfyConfig()
+    if (!topic) return { ok: false, error: '未配置 ntfy Topic' }
+    try {
+      const ok = await new Promise((resolve) => {
+        const url = `${server.replace(/\/+$/, '')}/${encodeURIComponent(topic)}`
+        const u = new URL(url)
+        const req = https.request({ hostname: u.hostname, path: u.pathname, method: 'POST', headers: { 'Title': '🧪 测试推送', 'Tags': 'white_check_mark' }, timeout: 10000 }, (res) => {
+          res.resume()
+          res.on('end', () => resolve(res.statusCode >= 200 && res.statusCode < 300))
+        })
+        req.on('error', () => resolve(false))
+        req.on('timeout', () => { req.destroy(); resolve(false) })
+        req.write('ntfy 推送已连通')
+        req.end()
+      })
+      return ok ? { ok: true } : { ok: false, error: '推送请求失败，检查 Topic / 服务器' }
+    } catch (e) { return { ok: false, error: e.message } }
+  })
   ipcMain.handle('test-bark', async () => {
     const { key } = getBarkConfig()
     if (!key) return { ok: false, error: '未配置 Bark Key' }

@@ -59,6 +59,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setBarkConfig: (cfg) => ipcRenderer.send('set-bark-config', cfg),
   testBark: () => ipcRenderer.invoke('test-bark'),
   getRemoteStatus: () => ipcRenderer.invoke('get-remote-status'),
+  getNtfyConfig: () => ipcRenderer.invoke('get-ntfy-config'),
+  setNtfyConfig: (cfg) => ipcRenderer.send('set-ntfy-config', cfg),
+  testNtfy: () => ipcRenderer.invoke('test-ntfy'),
 
   // 多供应商余额查询（参考 cc-switch）
   providerList: () => ipcRenderer.invoke('provider-list'),
