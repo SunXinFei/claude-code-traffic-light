@@ -1,4 +1,5 @@
-.claude
+.claude/*
+!.claude/plans/
 
 # Dependencies
 node_modules/
