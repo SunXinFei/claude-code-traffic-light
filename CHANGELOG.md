@@ -9,11 +9,16 @@
 ### 新增
 
 - **安卓手机推送（ntfy）** - 设置页「手机推送」分区新增 iOS / 安卓 tab：iOS 继续 Bark（逻辑不变）；安卓用 ntfy（开源跨平台，F-Droid / Google Play / ntfy.sh），填 Topic + 手机 app 订阅同名，点通知打开控制页滑动批准。
+- **使用文档** - 新增 `docs/phone-push-approve.md`（配置/使用/测试/排错）；设计原理与信号协议见 `.claude/plans/hook-auto-approve.md`
 
 ### 变更
 
 - 隐藏设置页的控制页 URL 显示（避免未配置推送的用户误打开），改通过点推送通知打开控制页
 - 「Hook 自动批准」启用条件改为：填了 Bark Key **或** ntfy Topic 任一即启用
+
+### 修复
+
+- ntfy 推送改用 JSON body 格式（title/message/click 都放 body），避免 HTTP header 含中文/emoji 触发 `Invalid character in header content`
 
 ## [2.3.0] - 2026-07-31
 

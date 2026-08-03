@@ -469,18 +469,19 @@ function sendBarkNotification(title, body, openUrl) {
   } catch (e) { console.error('[bark] url error:', e.message) }
 }
 
-// ntfy 推送（安卓）：POST {server}/{topic}，Title/Click headers。点通知打开控制页
+// ntfy 推送（安卓）：JSON body 格式（title/message/click 都在 body，避免 header 中文报错）
 function sendNtfyNotification(title, body, openUrl) {
   const { topic, server } = getNtfyConfig()
   if (!topic) return
-  const url = `${server.replace(/\/+$/, '')}/${encodeURIComponent(topic)}`
+  const url = server.replace(/\/+$/, '')
   try {
     const u = new URL(url)
-    const headers = { 'Title': title, 'Tags': 'warning,orange_circle' }
-    if (openUrl) headers['Click'] = openUrl  // 点通知打开此 URL（手机控制页）
-    const req = https.request({ hostname: u.hostname, path: u.pathname, method: 'POST', headers, timeout: 10000 }, (res) => { res.resume() })
+    const payload = { topic, title, message: body, tags: ['warning'] }
+    if (openUrl) payload.click = openUrl  // 点通知打开此 URL（手机控制页）
+    const data = JSON.stringify(payload)
+    const req = https.request({ hostname: u.hostname, path: u.pathname || '/', method: 'POST', headers: { 'Content-Type': 'application/json' }, timeout: 10000 }, (res) => { res.resume() })
     req.on('error', (e) => console.error('[ntfy] push failed:', e.message))
-    req.write(body)
+    req.write(data)
     req.end()
   } catch (e) { console.error('[ntfy] url error:', e.message) }
 }
@@ -1648,15 +1649,18 @@ function createWindow() {
     if (!topic) return { ok: false, error: '未配置 ntfy Topic' }
     try {
       const ok = await new Promise((resolve) => {
-        const url = `${server.replace(/\/+$/, '')}/${encodeURIComponent(topic)}`
-        const u = new URL(url)
-        const req = https.request({ hostname: u.hostname, path: u.pathname, method: 'POST', headers: { 'Title': '🧪 测试推送', 'Tags': 'white_check_mark' }, timeout: 10000 }, (res) => {
+        const u = new URL(server.replace(/\/+$/, ''))
+        const payload = { topic, title: '🧪 测试推送', message: 'ntfy 推送已连通', tags: ['white_check_mark'] }
+        const ctl = getRemoteControlUrl()
+        if (ctl) payload.click = ctl
+        const data = JSON.stringify(payload)
+        const req = https.request({ hostname: u.hostname, path: u.pathname || '/', method: 'POST', headers: { 'Content-Type': 'application/json' }, timeout: 10000 }, (res) => {
           res.resume()
           res.on('end', () => resolve(res.statusCode >= 200 && res.statusCode < 300))
         })
         req.on('error', () => resolve(false))
         req.on('timeout', () => { req.destroy(); resolve(false) })
-        req.write('ntfy 推送已连通')
+        req.write(data)
         req.end()
       })
       return ok ? { ok: true } : { ok: false, error: '推送请求失败，检查 Topic / 服务器' }
