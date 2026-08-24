@@ -215,6 +215,18 @@
     }
     .cc-toast.show { opacity: 1; }
     .cc-toast.err { background: #FF453A; }
+
+    /* ---------- 省钱 / 烧钱模式 ---------- */
+    .mode-seg { display: flex; gap: 6px; }
+    .mode-btn {
+      flex: 1; padding: 8px 0; border-radius: 8px;
+      border: 1px solid rgba(255,255,255,0.1);
+      background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.7);
+      font-size: 12px; font-weight: 500; cursor: pointer; transition: all 0.15s;
+    }
+    .mode-btn:hover { background: rgba(255,255,255,0.12); }
+    .mode-btn.active { background: #30D158; border-color: #30D158; color: white; }
+    .mode-btn.active.burn { background: #FF9F0A; border-color: #FF9F0A; }
   </style>
 </head>
 <body>
@@ -692,6 +704,7 @@
     let ccShowAll = false
     let ccCurrent = ''
     let ccEditing = null  // null | 'new' | provider object
+    let ccEditMode = 'normal'  // 省钱/烧钱模式（编辑面板内暂存）
 
     const CC_MANAGED_KEYS = new Set([
       'ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY',
@@ -846,6 +859,7 @@
       const keyField = p.apiKeyField || 'ANTHROPIC_AUTH_TOKEN'
       const keyValue = env[keyField] || ''
       const extras = Object.keys(env).filter((k) => !CC_MANAGED_KEYS.has(k))
+      ccEditMode = p.modelMode || 'normal'
 
       panel.classList.remove('hidden')
       panel.innerHTML = `
@@ -886,6 +900,15 @@
             <input type="text" id="cc-opus" value="${ccEsc(env.ANTHROPIC_DEFAULT_OPUS_MODEL || '')}" placeholder="opus model">
           </div>
         </div>
+        <div class="field" style="margin-top:10px;">
+          <div class="field-label">💸 省钱 / 烧钱模式</div>
+          <div class="mode-seg" id="cc-mode-seg">
+            <button type="button" class="mode-btn${ccEditMode === 'normal' ? ' active' : ''}" data-mode="normal" onclick="ccModePick('normal')">普通</button>
+            <button type="button" class="mode-btn${ccEditMode === 'save' ? ' active' : ''}" data-mode="save" onclick="ccModePick('save')">省钱</button>
+            <button type="button" class="mode-btn burn${ccEditMode === 'burn' ? ' active' : ''}" data-mode="burn" onclick="ccModePick('burn')">烧钱</button>
+          </div>
+          <div class="hint" style="margin-top:4px;">省钱：北京时间高峰（9–12、14–18）自动用低端模型；烧钱：始终用高端模型。低端 = Haiku，高端 = 主模型/Opus/Sonnet。</div>
+        </div>
         ${extras.length ? `<div class="hint" style="margin-top:6px;">额外保留: ${ccEsc(extras.join(', '))}</div>` : ''}
         <div class="actions" style="margin-top:10px;">
           <button class="btn btn-primary btn-sm" onclick="ccSaveEdit()">保存</button>
@@ -899,6 +922,12 @@
     function ccCancelEdit() {
       ccEditing = null
       document.getElementById('cc-edit').classList.add('hidden')
+    }
+
+    function ccModePick(mode) {
+      ccEditMode = mode
+      const seg = document.getElementById('cc-mode-seg')
+      if (seg) seg.querySelectorAll('.mode-btn').forEach((b) => b.classList.toggle('active', b.dataset.mode === mode))
     }
 
     async function ccSaveEdit() {
@@ -934,6 +963,7 @@
         settingsConfig: { env },
         isCustom: p.isCustom !== false,
         websiteUrl: p.websiteUrl || '',
+        modelMode: ccEditMode,
       })
       if (r && r.ok) {
         ccToast('已保存')

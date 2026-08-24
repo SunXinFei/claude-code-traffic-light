@@ -29,6 +29,14 @@ const STATE_DIR = path.join(CLAUDE_DIR, 'traffic_light')
 const CLAUDE_SETTINGS_PATH = path.join(CLAUDE_DIR, 'settings.json')
 const PROVIDERS_FILE = path.join(STATE_DIR, 'providers.json')
 
+// 模型槽位（省钱/烧钱模式会整体覆盖这四个 env 键）
+const MODEL_SLOTS = [
+  'ANTHROPIC_MODEL',
+  'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+  'ANTHROPIC_DEFAULT_SONNET_MODEL',
+  'ANTHROPIC_DEFAULT_OPUS_MODEL',
+]
+
 // 仅供 live 写入时剔除的内部字段（绝不写入 Claude settings.json）
 function sanitizeForLive(config) {
   if (!config || typeof config !== 'object' || Array.isArray(config)) return config
@@ -88,15 +96,16 @@ function readClaudeSettings() {
 }
 
 // 合并构造切换后的 settings.json：保留 hooks/permissions 等，env 由 provider 接管
-function buildSwitchedSettings(providerConfig) {
+function buildSwitchedSettings(providerConfig, modelMode) {
   const current = readClaudeSettings() || {}
   const next = deepClone(current) || {}
 
   const cfg = providerConfig && typeof providerConfig === 'object' ? providerConfig : {}
 
-  // env 由 provider 整体替换（若 provider 无 env 则清空 env）
+  // env 由 provider 整体替换（若 provider 无 env 则清空 env）；
+  // 省钱/烧钱模式会在此基础上覆盖模型槽位。
   if (Object.prototype.hasOwnProperty.call(cfg, 'env')) {
-    next.env = deepClone(cfg.env) || {}
+    next.env = applyModelOverride(deepClone(cfg.env) || {}, modelMode || 'normal')
   } else {
     delete next.env
   }
@@ -173,9 +182,15 @@ function saveProvider(provider) {
   if (provider.id) {
     const idx = store.providers.findIndex((p) => p.id === provider.id)
     if (idx >= 0) {
-      // 更新既有 provider，保留原有的 pinned / isOfficial（除非显式传入）
-      const existingPinned = store.providers[idx].pinned
-      store.providers[idx] = { ...store.providers[idx], ...provider, settingsConfig: cfg, pinned: provider.pinned != null ? provider.pinned : existingPinned }
+      // 更新既有 provider，保留原有的 pinned / isOfficial / settingsConfig（除非显式传入）
+      const existing = store.providers[idx]
+      store.providers[idx] = {
+        ...existing,
+        ...provider,
+        settingsConfig: provider.settingsConfig || existing.settingsConfig,
+        pinned: provider.pinned != null ? provider.pinned : existing.pinned,
+        modelMode: normalizeModelMode(provider.modelMode != null ? provider.modelMode : existing.modelMode),
+      }
       saveProviderStore(store)
       return store.providers[idx]
     }
@@ -190,6 +205,7 @@ function saveProvider(provider) {
     isCustom: provider.isCustom !== false,
     isOfficial: !!provider.isOfficial,
     pinned: !!provider.pinned,
+    modelMode: normalizeModelMode(provider.modelMode),
     createdAt: Date.now(),
     sortIndex: provider.sortIndex != null ? provider.sortIndex : store.providers.length,
   }
@@ -213,6 +229,72 @@ function detectApiKeyField(cfg) {
   return 'ANTHROPIC_AUTH_TOKEN'
 }
 
+// ---------- 省钱 / 烧钱模式 ----------
+// 每个供应商可配置 modelMode：normal 用原模型；save 高峰时段强制低端模型；burn 始终强制高端。
+// 高端/低端从 provider 的 env 推导：高端 = 主模型/opus/sonnet，低端 = haiku。
+// 对 DeepSeek 即：高端 deepseek-v4-pro，低端 deepseek-v4-flash。
+
+function normalizeModelMode(m) {
+  return ['normal', 'save', 'burn'].includes(m) ? m : 'normal'
+}
+
+// 北京时间是否处于高峰时段（9:00-12:00、14:00-18:00）
+function isPeakHourNow(now) {
+  const d = now instanceof Date ? now : new Date()
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Shanghai', hour: 'numeric', hour12: false,
+  }).formatToParts(d)
+  const hour = parseInt(parts.find((p) => p.type === 'hour').value, 10)
+  return (hour >= 9 && hour < 12) || (hour >= 14 && hour < 18)
+}
+
+function deriveModelPair(env) {
+  const e = env || {}
+  const high = e.ANTHROPIC_MODEL || e.ANTHROPIC_DEFAULT_OPUS_MODEL || e.ANTHROPIC_DEFAULT_SONNET_MODEL || ''
+  const low = e.ANTHROPIC_DEFAULT_HAIKU_MODEL || e.ANTHROPIC_MODEL || high
+  return { high, low }
+}
+
+// 按模式覆盖模型槽位；无覆盖时原样返回传入的 env（不复制）。
+function applyModelOverride(env, mode) {
+  if (!env || mode === 'normal') return env
+  const { high, low } = deriveModelPair(env)
+  let target = null
+  if (mode === 'burn') target = high
+  else if (mode === 'save' && isPeakHourNow()) target = low
+  if (!target) return env
+  const next = deepClone(env)
+  for (const k of MODEL_SLOTS) next[k] = target
+  return next
+}
+
+// 显式重算当前供应商的 live 设置（切换模式/保存当前供应商后调用，含切回 normal 还原原始模型）
+function rebuildCurrent() {
+  const store = getProviderStore()
+  const provider = store.providers.find((p) => p.id === store.current)
+  if (!provider) return false
+  writeJsonAtomic(CLAUDE_SETTINGS_PATH, buildSwitchedSettings(provider.settingsConfig, provider.modelMode))
+  return true
+}
+
+// 定时重算：只有省钱模式需要监听（高峰/非高峰边界切换时重写模型槽位）。
+// 烧钱模式静态强制高端、normal 用原模型，均无需定时监听，避免覆盖用户在 Claude Code 内手动 /model 的改动。
+// 返回是否发生写入。
+function reapplyModelMode() {
+  const store = getProviderStore()
+  const provider = store.providers.find((p) => p.id === store.current)
+  if (!provider) return false
+  const mode = normalizeModelMode(provider.modelMode)
+  if (mode !== 'save') return false
+  const env = (provider.settingsConfig && provider.settingsConfig.env) || {}
+  const targetEnv = applyModelOverride(env, mode)
+  const liveEnv = (readClaudeSettings().env) || {}
+  const changed = MODEL_SLOTS.some((k) => (liveEnv[k] || '') !== (targetEnv[k] || ''))
+  if (!changed) return false
+  writeJsonAtomic(CLAUDE_SETTINGS_PATH, buildSwitchedSettings(provider.settingsConfig, mode))
+  return true
+}
+
 // ---------- 切换 ----------
 
 function switchProvider(id) {
@@ -229,12 +311,22 @@ function switchProvider(id) {
       const live = readClaudeSettings()
       if (live && live.env && Object.keys(live.env).length > 0) {
         outgoing.settingsConfig = outgoing.settingsConfig || {}
-        outgoing.settingsConfig.env = deepClone(live.env)
+        const env = deepClone(live.env)
+        // 省钱/烧钱模式下模型槽位由模式接管，回填时还原供应商原有的模型槽位，
+        // 避免把被覆盖的模型写回供应商配置（也避免丢掉其原始模型）。
+        if (normalizeModelMode(outgoing.modelMode) !== 'normal') {
+          const origEnv = outgoing.settingsConfig.env || {}
+          for (const k of MODEL_SLOTS) {
+            if (origEnv[k] != null) env[k] = origEnv[k]
+            else delete env[k]
+          }
+        }
+        outgoing.settingsConfig.env = env
       }
     }
   }
 
-  const next = buildSwitchedSettings(provider.settingsConfig)
+  const next = buildSwitchedSettings(provider.settingsConfig, provider.modelMode)
   writeJsonAtomic(CLAUDE_SETTINGS_PATH, next)
 
   store.current = id
@@ -333,12 +425,22 @@ const PROVIDER_PRESETS = [
     },
   },
   {
-    id: 'preset-volc-agentplan',
-    name: '火山 Agentplan',
+    id: 'preset-volc-codingplan',
+    name: '火山 Coding Plan',
     websiteUrl: 'https://www.volcengine.com/product/ark',
     apiKeyField: 'ANTHROPIC_AUTH_TOKEN',
     settingsConfig: {
       env: presetEnv('https://ark.cn-beijing.volces.com/api/coding', 'ANTHROPIC_AUTH_TOKEN',
+        'ark-code-latest', 'ark-code-latest', 'ark-code-latest', 'ark-code-latest'),
+    },
+  },
+  {
+    id: 'preset-volc-agentplan',
+    name: '火山 Agent Plan',
+    websiteUrl: 'https://www.volcengine.com/product/ark',
+    apiKeyField: 'ANTHROPIC_AUTH_TOKEN',
+    settingsConfig: {
+      env: presetEnv('https://ark.cn-beijing.volces.com/api/plan', 'ANTHROPIC_AUTH_TOKEN',
         'ark-code-latest', 'ark-code-latest', 'ark-code-latest', 'ark-code-latest'),
     },
   },
@@ -627,4 +729,7 @@ module.exports = {
   hasApiKey,
   isProviderVisible,
   PROVIDER_PRESETS,
+  reapplyModelMode,
+  rebuildCurrent,
+  isPeakHourNow,
 }

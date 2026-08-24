@@ -852,6 +852,39 @@ const VOLC_ERROR_MAP = {
   UnauthorizedOperation: 'AK 无权访问 Ark Coding Plan',
 }
 
+// Agent Plan (/api/plan) 与 Coding Plan (/api/coding) 走不同的 OpenAPI Action：
+//   GetAFPUsage          -> Result.AFPFiveHour/AFPDaily/AFPWeekly/AFPMonthly (Quota/Used, 毫秒时间戳)
+//   GetCodingPlanUsage   -> Result.QuotaUsage[] (Level/Percent/ResetTimestamp)
+function isVolcAgentPlan() {
+  try {
+    const s = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'))
+    const baseUrl = (s.env && s.env.ANTHROPIC_BASE_URL || '').toLowerCase()
+    return baseUrl.includes('volces.com') && baseUrl.includes('/api/plan')
+  } catch { return false }
+}
+
+// Agent Plan: 四个桶映射为统一 quotas（AFPDaily UI 暂不展示，保留在数据里）
+function _parseAfpUsage(result) {
+  const buckets = [
+    ['AFPFiveHour', 'five_hour'],
+    ['AFPDaily', 'daily'],
+    ['AFPWeekly', 'weekly'],
+    ['AFPMonthly', 'monthly'],
+  ]
+  const quotas = []
+  for (const [key, level] of buckets) {
+    const b = result[key]
+    if (b && _num(b.Quota) > 0) {
+      quotas.push({
+        level,
+        percent: (_num(b.Used) / _num(b.Quota)) * 100,
+        resetTimestamp: _toResetSecs(b.ResetTime),
+      })
+    }
+  }
+  return quotas
+}
+
 function fetchVolcArkUsage() {
   const { accessKeyId, secretAccessKey } = getVolcCredentials()
   if (!accessKeyId || !secretAccessKey) {
@@ -860,12 +893,14 @@ function fetchVolcArkUsage() {
     return
   }
 
+  const agentPlan = isVolcAgentPlan()
+
   let presign
   try {
     presign = buildArkPresignUrl({
       accessKeyId,
       secretAccessKey,
-      action: 'GetCodingPlanUsage',
+      action: agentPlan ? 'GetAFPUsage' : 'GetCodingPlanUsage',
     })
   } catch (e) {
     lastBalance = { provider: 'volcengine', error: '签名构造失败: ' + e.message }
@@ -898,6 +933,17 @@ function fetchVolcArkUsage() {
           lastBalance = {
             provider: 'volcengine',
             error: VOLC_ERROR_MAP[code] || `${code}: ${meta.Error.Message || ''}`,
+          }
+        } else if (agentPlan && json.Result?.AFPFiveHour) {
+          const quotas = _parseAfpUsage(json.Result).filter(q => q.percent != null)
+          if (!quotas.length) {
+            lastBalance = { provider: 'volcengine', error: '暂无用量数据' }
+          } else {
+            lastBalance = {
+              provider: 'volcengine',
+              status: json.Result.PlanType || '',
+              quotas,
+            }
           }
         } else if (json.Result?.QuotaUsage) {
           lastBalance = {
@@ -1785,6 +1831,12 @@ function createWindow() {
   refreshSelectedBalance()
   const balancePoll = setInterval(refreshSelectedBalance, 3600 * 1000)
 
+  // 省钱模式：启动时 + 每 10 分钟检查是否跨越高峰/非高峰边界，必要时重写模型槽位
+  try { providers.reapplyModelMode() } catch (e) { console.error('[model-mode] startup reapply failed:', e) }
+  const modelModePoll = setInterval(() => {
+    try { providers.reapplyModelMode() } catch (e) { console.error('[model-mode] reapply failed:', e) }
+  }, 10 * 60 * 1000)
+
   ipcMain.handle('read-clipboard', () => {
     try { return clipboard.readText() } catch { return '' }
   })
@@ -1817,6 +1869,10 @@ function createWindow() {
   ipcMain.handle('cc:save-provider', (_, provider) => {
     try {
       const saved = providers.saveProvider(provider)
+      // 保存的是当前供应商时，立即按新配置（含省钱/烧钱模式）重写 live settings
+      if (saved.id === providers.getCurrentProviderId()) {
+        providers.rebuildCurrent()
+      }
       refreshTrayMenu()
       if (settingsWin) settingsWin.webContents.send('cc:providers-changed')
       return { ok: true, provider: saved }
